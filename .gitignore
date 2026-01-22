@@ -1,0 +1,60 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+grabbi-backend
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Vendor directory
+/vendor/
+
+# Go workspace files
+*.mod
+*.sum
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Firebase service account
+config/firebase/serviceAccountKey.json
+.firebase/
+.env
+
