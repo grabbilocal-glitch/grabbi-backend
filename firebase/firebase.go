@@ -7,20 +7,40 @@ import (
 	"log"
 	"mime/multipart"
 	"os"
+	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
+	"google.golang.org/api/option"
 )
 
 var App *firebase.App
 
 func Init() {
-	app, err := firebase.NewApp(context.Background(), nil)
+	credJSON := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	
+	var opts []option.ClientOption
+	
+	if credJSON != "" {
+		if strings.HasPrefix(credJSON, "{") {
+			log.Println("Using Firebase credentials from environment variable")
+			opts = append(opts, option.WithCredentialsJSON([]byte(credJSON)))
+		} else {
+			// It's a file path
+			log.Println("Using Firebase credentials from file:", credJSON)
+			opts = append(opts, option.WithCredentialsFile(credJSON))
+		}
+	} else {
+		log.Println("Warning: GOOGLE_APPLICATION_CREDENTIALS not set, using default credentials")
+	}
+
+	app, err := firebase.NewApp(context.Background(), nil, opts...)
 	if err != nil {
 		log.Fatalf("Firebase init failed: %v", err)
 	}
 
 	App = app
+	log.Println("Firebase initialized successfully")
 }
 
 func UploadProductImage(
