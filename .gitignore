@@ -45,9 +45,8 @@ Thumbs.db
 # Vendor directory
 /vendor/
 
-# Go workspace files
-*.mod
-*.sum
+# Go workspace file (but NOT go.mod and go.sum which are required)
+go.work
 
 # OS files
 .DS_Store
@@ -57,4 +56,3 @@ Thumbs.db
 config/firebase/serviceAccountKey.json
 .firebase/
 .env
-
