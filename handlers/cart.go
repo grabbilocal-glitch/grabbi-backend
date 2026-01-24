@@ -22,7 +22,7 @@ func (h *CartHandler) GetCart(c *gin.Context) {
 	}
 
 	var cartItems []models.CartItem
-	if err := h.DB.Preload("Product").Preload("Product.Category").Where("user_id = ?", userID).Find(&cartItems).Error; err != nil {
+	if err := h.DB.Preload("Product").Preload("Product.Category").Preload("Product.Images").Where("user_id = ?", userID).Find(&cartItems).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch cart"})
 		return
 	}
@@ -82,7 +82,7 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 		h.DB.Create(&cartItem)
 	}
 
-	h.DB.Preload("Product").Preload("Product.Category").First(&cartItem, cartItem.ID)
+	h.DB.Preload("Product").Preload("Product.Category").Preload("Product.Images").First(&cartItem, cartItem.ID)
 	c.JSON(http.StatusOK, cartItem)
 }
 
@@ -120,7 +120,7 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 	cartItem.Quantity = req.Quantity
 	h.DB.Save(&cartItem)
 
-	h.DB.Preload("Product").Preload("Product.Category").First(&cartItem, cartItem.ID)
+	h.DB.Preload("Product").Preload("Product.Category").Preload("Product.Images").First(&cartItem, cartItem.ID)
 	c.JSON(http.StatusOK, cartItem)
 }
 

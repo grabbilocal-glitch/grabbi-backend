@@ -41,8 +41,9 @@ type OrderItem struct {
 	ID        uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	OrderID   uuid.UUID `gorm:"type:uuid;not null" json:"order_id"`
 	Order     Order     `gorm:"foreignKey:OrderID" json:"-"`
-	ProductID uuid.UUID `gorm:"type:uuid;not null" json:"product_id"`
+	ProductID uuid.UUID `gorm:"type:uuid;not null;index" json:"product_id"`
 	Product   Product   `gorm:"foreignKey:ProductID" json:"product"`
+	ImageURL  string    `json:"image_url"`
 	Quantity  int       `gorm:"not null" json:"quantity"`
 	Price     float64   `gorm:"not null" json:"price"`
 	CreatedAt time.Time `json:"created_at"`

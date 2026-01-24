@@ -31,7 +31,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Get cart items
+	// Get cart items with product data
 	var cartItems []models.CartItem
 	if err := h.DB.Preload("Product").Where("user_id = ?", userID).Find(&cartItems).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch cart"})
@@ -48,12 +48,17 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	var orderItems []models.OrderItem
 
 	for _, item := range cartItems {
+		// Get current primary image for this product
+		var primaryImage models.ProductImage
+		h.DB.Where("product_id = ? AND is_primary = ?", item.ProductID, true).First(&primaryImage)
+
 		itemTotal := item.Product.Price * float64(item.Quantity)
 		subtotal += itemTotal
 
 		orderItems = append(orderItems, models.OrderItem{
 			ID:        uuid.Nil, // Let DB default (gen_random_uuid) assign UUID
 			ProductID: item.ProductID,
+			ImageURL:  primaryImage.ImageURL,
 			Quantity:  item.Quantity,
 			Price:     item.Product.Price,
 		})
@@ -139,7 +144,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	// Load order with relations
-	h.DB.Preload("Items").Preload("Items.Product").Preload("User").First(&order, order.ID)
+	h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User").First(&order, order.ID)
 
 	c.JSON(http.StatusCreated, order)
 }
@@ -149,7 +154,7 @@ func (h *OrderHandler) GetOrders(c *gin.Context) {
 	userRole, _ := c.Get("user_role")
 
 	var orders []models.Order
-	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("User")
+	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User")
 
 	// If not admin, filter by user
 	if userRole != "admin" && exists {
@@ -170,7 +175,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	userRole, _ := c.Get("user_role")
 
 	var order models.Order
-	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("User")
+	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User")
 
 	if userRole == "admin" {
 		query = query.Where("id = ?", id)
@@ -209,6 +214,6 @@ func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 		return
 	}
 
-	h.DB.Preload("Items").Preload("Items.Product").Preload("User").First(&order, order.ID)
+	h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Images").Preload("User").First(&order, order.ID)
 	c.JSON(http.StatusOK, order)
 }

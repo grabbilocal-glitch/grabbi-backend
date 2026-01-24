@@ -26,9 +26,9 @@ func main() {
 	}
 
 	// Run migrations
-	// if err := database.Migrate(db); err != nil {
-	// 	log.Fatal("Failed to run migrations:", err)
-	// }
+	if err := database.Migrate(db); err != nil {
+		log.Fatal("Failed to run migrations:", err)
+	}
 
 	// Create default admin user if not exists
 	if err := database.CreateDefaultAdmin(db); err != nil {

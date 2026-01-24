@@ -36,6 +36,7 @@ func Migrate(db *gorm.DB) error {
 		&models.User{},
 		&models.Category{},
 		&models.Product{},
+		&models.ProductImage{},
 		&models.CartItem{},
 		&models.Order{},
 		&models.OrderItem{},
