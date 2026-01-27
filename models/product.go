@@ -9,7 +9,7 @@ import (
 
 type Product struct {
 	ID               uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	SKU              string    `gorm:"uniqueIndex:products_sku_key;not null" json:"sku"`    // Stock Keeping Unit
+	SKU              string    `gorm:"uniqueIndex;not null" json:"sku"`    // Stock Keeping Unit
 	ItemName         string    `gorm:"not null;index" json:"item_name"`    // Replaces Name field
 	ShortDescription string    `gorm:"type:text" json:"short_description"` // Brief product description
 	LongDescription  string    `gorm:"type:text" json:"long_description"`  // Detailed product description
