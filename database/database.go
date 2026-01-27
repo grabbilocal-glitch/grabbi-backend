@@ -31,9 +31,9 @@ func Connect() (*gorm.DB, error) {
 	}
 
 	// Optimize connection pool for concurrent batch import operations
-	sqlDB.SetMaxOpenConns(25)            // Increase from default (2) to handle concurrent workers
-	sqlDB.SetMaxIdleConns(10)             // Keep idle connections ready
-	sqlDB.SetConnMaxLifetime(5 * time.Minute) // Reuse connections for 5 minutes
+	sqlDB.SetMaxOpenConns(25)                  // Increase from default (2) to handle concurrent workers
+	sqlDB.SetMaxIdleConns(10)                  // Keep idle connections ready
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)  // Reuse connections for 5 minutes
 	sqlDB.SetConnMaxIdleTime(30 * time.Second) // Close idle connections after 30s
 
 	log.Printf("Database connection pool configured: MaxOpen=25, MaxIdle=10")
