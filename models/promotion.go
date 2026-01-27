@@ -8,13 +8,14 @@ import (
 )
 
 type Promotion struct {
-	ID          uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	Title       string    `gorm:"not null" json:"title"`
-	Description string    `json:"description"`
-	Image       string    `json:"image"`
-	IsActive    bool      `gorm:"default:true" json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	Title       string         `gorm:"not null" json:"title"`
+	Description string         `json:"description"`
+	Image       string         `json:"image"`
+	ProductURL  string         `gorm:"column:product_url" json:"product_url"`
+	IsActive    bool           `gorm:"default:true" json:"is_active"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 

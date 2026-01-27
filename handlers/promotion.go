@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"grabbi-backend/models"
+	"grabbi-backend/utils"
 
 	"grabbi-backend/firebase"
 
@@ -52,6 +53,7 @@ func (h *PromotionHandler) CreatePromotion(c *gin.Context) {
 	promotion.ID = uuid.New()
 	promotion.Title = c.PostForm("title")
 	promotion.Description = c.PostForm("description")
+	promotion.ProductURL = c.PostForm("product_url")
 	promotion.IsActive = c.PostForm("is_active") == "true"
 
 	// Image upload
@@ -95,13 +97,14 @@ func (h *PromotionHandler) UpdatePromotion(c *gin.Context) {
 
 	promotion.Title = c.PostForm("title")
 	promotion.Description = c.PostForm("description")
+	promotion.ProductURL = c.PostForm("product_url")
 	promotion.IsActive = c.PostForm("is_active") == "true"
 
 	//Image update
 	fileHeader, err := c.FormFile("image")
 	if err == nil {
 		if promotion.Image != "" {
-			objectPath, err := extractObjectPath(promotion.Image)
+			objectPath, err := utils.ExtractObjectPath(promotion.Image)
 			if err == nil {
 				_ = firebase.DeleteFile(objectPath)
 			}
@@ -143,7 +146,7 @@ func (h *PromotionHandler) DeletePromotion(c *gin.Context) {
 
 	// Delete image from Firebase
 	if promotion.Image != "" {
-		objectPath, err := extractObjectPath(promotion.Image)
+		objectPath, err := utils.ExtractObjectPath(promotion.Image)
 		if err == nil {
 			_ = firebase.DeleteFile(objectPath)
 		}

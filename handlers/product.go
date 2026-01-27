@@ -1,14 +1,14 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
+	"time"
 
 	"grabbi-backend/firebase"
 	"grabbi-backend/models"
+	"grabbi-backend/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,6 +17,15 @@ import (
 
 type ProductHandler struct {
 	DB *gorm.DB
+}
+
+// generateSKU generates a unique SKU using database sequence
+func generateSKU(db *gorm.DB) (string, error) {
+	var sku string
+	if err := db.Raw("SELECT generate_next_sku()").Scan(&sku).Error; err != nil {
+		return "", err
+	}
+	return sku, nil
 }
 
 func (h *ProductHandler) GetProducts(c *gin.Context) {
@@ -28,9 +37,14 @@ func (h *ProductHandler) GetProducts(c *gin.Context) {
 		query = query.Where("category_id = ?", categoryID)
 	}
 
+	// Filter by online_visible status
+	if c.Query("show_all") != "true" {
+		query = query.Where("online_visible = ?", true)
+	}
+
 	// Search by name
 	if search := c.Query("search"); search != "" {
-		query = query.Where("name ILIKE ?", "%"+search+"%")
+		query = query.Where("item_name ILIKE ?", "%"+search+"%")
 	}
 
 	if err := query.Find(&products).Error; err != nil {
@@ -55,17 +69,96 @@ func (h *ProductHandler) GetProduct(c *gin.Context) {
 func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	var product models.Product
 
-	// Form values
-	product.Name = c.PostForm("name")
-	product.Description = c.PostForm("description")
+	// Basic Info
+	product.SKU = c.PostForm("sku")
+	
+	// Auto-generate SKU if empty
+	if product.SKU == "" {
+		generatedSKU, err := generateSKU(h.DB)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate SKU"})
+			return
+		}
+		product.SKU = generatedSKU
+		log.Printf("Auto-generated SKU: %s", generatedSKU)
+	}
+	
+	product.ItemName = c.PostForm("item_name")
+	product.ShortDescription = c.PostForm("short_description")
+	product.LongDescription = c.PostForm("long_description")
 	product.Brand = c.PostForm("brand")
 	product.PackSize = c.PostForm("pack_size")
 
-	product.Price, _ = strconv.ParseFloat(c.PostForm("price"), 64)
-	product.Stock, _ = strconv.Atoi(c.PostForm("stock"))
+	// Pricing
+	product.CostPrice, _ = strconv.ParseFloat(c.PostForm("cost_price"), 64)
+	product.RetailPrice, _ = strconv.ParseFloat(c.PostForm("retail_price"), 64)
+	
+	if promoPrice := c.PostForm("promotion_price"); promoPrice != "" {
+		price, _ := strconv.ParseFloat(promoPrice, 64)
+		product.PromotionPrice = &price
+	}
+	
+	// Parse date fields (format: YYYY-MM-DD)
+	if promoStart := c.PostForm("promotion_start"); promoStart != "" {
+		if parsedTime, err := time.Parse("2006-01-02", promoStart); err == nil {
+			product.PromotionStart = &parsedTime
+		} else {
+			log.Printf("Failed to parse promotion_start: %s, error: %v", promoStart, err)
+		}
+	}
+	
+	if promoEnd := c.PostForm("promotion_end"); promoEnd != "" {
+		if parsedTime, err := time.Parse("2006-01-02", promoEnd); err == nil {
+			product.PromotionEnd = &parsedTime
+		} else {
+			log.Printf("Failed to parse promotion_end: %s, error: %v", promoEnd, err)
+		}
+	}
+	
+	if expiryDate := c.PostForm("expiry_date"); expiryDate != "" {
+		if parsedTime, err := time.Parse("2006-01-02", expiryDate); err == nil {
+			product.ExpiryDate = &parsedTime
+		} else {
+			log.Printf("Failed to parse expiry_date: %s, error: %v", expiryDate, err)
+		}
+	}
+	
+	product.GrossMargin, _ = strconv.ParseFloat(c.PostForm("gross_margin"), 64)
+	product.StaffDiscount, _ = strconv.ParseFloat(c.PostForm("staff_discount"), 64)
+	product.TaxRate, _ = strconv.ParseFloat(c.PostForm("tax_rate"), 64)
+
+	// Inventory
+	product.StockQuantity, _ = strconv.Atoi(c.PostForm("stock_quantity"))
+	product.ReorderLevel, _ = strconv.Atoi(c.PostForm("reorder_level"))
+	product.ShelfLocation = c.PostForm("shelf_location")
+	
+	product.WeightVolume, _ = strconv.ParseFloat(c.PostForm("weight_volume"), 64)
+	product.UnitOfMeasure = c.PostForm("unit_of_measure")
+
+	// Dietary flags
 	product.IsVegan = c.PostForm("is_vegan") == "true"
 	product.IsGlutenFree = c.PostForm("is_gluten_free") == "true"
+	product.IsVegetarian = c.PostForm("is_vegetarian") == "true"
+	product.IsAgeRestricted = c.PostForm("is_age_restricted") == "true"
+	
+	if minAge := c.PostForm("minimum_age"); minAge != "" {
+		age, _ := strconv.Atoi(minAge)
+		product.MinimumAge = &age
+	}
 
+	// Additional Info
+	product.Supplier = c.PostForm("supplier")
+	product.CountryOfOrigin = c.PostForm("country_of_origin")
+	product.AllergenInfo = c.PostForm("allergen_info")
+	product.StorageType = c.PostForm("storage_type")
+	product.IsOwnBrand = c.PostForm("is_own_brand") == "true"
+	product.OnlineVisible = c.PostForm("online_visible") == "true"
+	product.Status = c.PostForm("status")
+	product.Notes = c.PostForm("notes")
+	product.Barcode = c.PostForm("barcode")
+	product.BatchNumber = c.PostForm("batch_number")
+
+	// Category
 	categoryID, err := uuid.Parse(c.PostForm("category_id"))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "Invalid category ID"})
@@ -77,6 +170,16 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	if err := h.DB.First(&models.Category{}, "id = ?", product.CategoryID).Error; err != nil {
 		c.JSON(400, gin.H{"error": "Invalid category"})
 		return
+	}
+
+	// Subcategory (optional)
+	if subcategoryIDStr := c.PostForm("subcategory_id"); subcategoryIDStr != "" {
+		subcategoryID, err := uuid.Parse(subcategoryIDStr)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid subcategory ID"})
+			return
+		}
+		product.SubcategoryID = &subcategoryID
 	}
 
 	product.ID = uuid.New()
@@ -115,7 +218,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 			fileHeader.Header.Get("Content-Type"),
 		)
 		file.Close()
-		
+
 		if err != nil {
 			c.JSON(500, gin.H{"error": "Image upload failed"})
 			return
@@ -149,21 +252,125 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		return
 	}
 
-	product.Name = c.PostForm("name")
-	product.Description = c.PostForm("description")
+	// Basic Info
+	if sku := c.PostForm("sku"); sku != "" {
+		product.SKU = sku
+	}
+	product.ItemName = c.PostForm("item_name")
+	product.ShortDescription = c.PostForm("short_description")
+	product.LongDescription = c.PostForm("long_description")
 	product.Brand = c.PostForm("brand")
 	product.PackSize = c.PostForm("pack_size")
 
-	if price := c.PostForm("price"); price != "" {
-		product.Price, _ = strconv.ParseFloat(price, 64)
+	// Pricing
+	if price := c.PostForm("retail_price"); price != "" {
+		product.RetailPrice, _ = strconv.ParseFloat(price, 64)
 	}
-
-	if stock := c.PostForm("stock"); stock != "" {
-		product.Stock, _ = strconv.Atoi(stock)
+	if costPrice := c.PostForm("cost_price"); costPrice != "" {
+		product.CostPrice, _ = strconv.ParseFloat(costPrice, 64)
 	}
+	if promoPrice := c.PostForm("promotion_price"); promoPrice != "" {
+		price, _ := strconv.ParseFloat(promoPrice, 64)
+		product.PromotionPrice = &price
+	}
+	
+	// Parse date fields (format: YYYY-MM-DD)
+	if promoStart := c.PostForm("promotion_start"); promoStart != "" {
+		if parsedTime, err := time.Parse("2006-01-02", promoStart); err == nil {
+			product.PromotionStart = &parsedTime
+		} else {
+			log.Printf("Failed to parse promotion_start: %s, error: %v", promoStart, err)
+		}
+	}
+	
+	if promoEnd := c.PostForm("promotion_end"); promoEnd != "" {
+		if parsedTime, err := time.Parse("2006-01-02", promoEnd); err == nil {
+			product.PromotionEnd = &parsedTime
+		} else {
+			log.Printf("Failed to parse promotion_end: %s, error: %v", promoEnd, err)
+		}
+	}
+	
+	if expiryDate := c.PostForm("expiry_date"); expiryDate != "" {
+		if parsedTime, err := time.Parse("2006-01-02", expiryDate); err == nil {
+			product.ExpiryDate = &parsedTime
+		} else {
+			log.Printf("Failed to parse expiry_date: %s, error: %v", expiryDate, err)
+		}
+	}
+	
+	product.GrossMargin, _ = strconv.ParseFloat(c.PostForm("gross_margin"), 64)
+	product.StaffDiscount, _ = strconv.ParseFloat(c.PostForm("staff_discount"), 64)
+	product.TaxRate, _ = strconv.ParseFloat(c.PostForm("tax_rate"), 64)
 
+	// Inventory
+	if stock := c.PostForm("stock_quantity"); stock != "" {
+		product.StockQuantity, _ = strconv.Atoi(stock)
+	}
+	product.ReorderLevel, _ = strconv.Atoi(c.PostForm("reorder_level"))
+	product.ShelfLocation = c.PostForm("shelf_location")
+	product.WeightVolume, _ = strconv.ParseFloat(c.PostForm("weight_volume"), 64)
+	product.UnitOfMeasure = c.PostForm("unit_of_measure")
+
+	// Dietary flags
 	product.IsVegan = c.PostForm("is_vegan") == "true"
 	product.IsGlutenFree = c.PostForm("is_gluten_free") == "true"
+	product.IsVegetarian = c.PostForm("is_vegetarian") == "true"
+	product.IsAgeRestricted = c.PostForm("is_age_restricted") == "true"
+	
+	if minAge := c.PostForm("minimum_age"); minAge != "" {
+		age, _ := strconv.Atoi(minAge)
+		product.MinimumAge = &age
+	}
+
+	// Additional Info
+	product.Supplier = c.PostForm("supplier")
+	product.CountryOfOrigin = c.PostForm("country_of_origin")
+	product.AllergenInfo = c.PostForm("allergen_info")
+	product.StorageType = c.PostForm("storage_type")
+	product.IsOwnBrand = c.PostForm("is_own_brand") == "true"
+	product.OnlineVisible = c.PostForm("online_visible") == "true"
+	product.Status = c.PostForm("status")
+	product.Notes = c.PostForm("notes")
+	product.Barcode = c.PostForm("barcode")
+	product.BatchNumber = c.PostForm("batch_number")
+
+	// Category
+	if categoryID := c.PostForm("category_id"); categoryID != "" {
+		newCategoryID, err := uuid.Parse(categoryID)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid category ID"})
+			return
+		}
+		
+		// Validate category exists
+		if err := h.DB.First(&models.Category{}, "id = ?", newCategoryID).Error; err != nil {
+			c.JSON(400, gin.H{"error": "Invalid category"})
+			return
+		}
+		
+		product.CategoryID = newCategoryID
+	}
+
+	// Update subcategory_id if provided
+	if subcategoryID := c.PostForm("subcategory_id"); subcategoryID != "" {
+		newSubcategoryID, err := uuid.Parse(subcategoryID)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "Invalid subcategory ID"})
+			return
+		}
+		
+		// Validate subcategory exists
+		if err := h.DB.First(&models.Subcategory{}, "id = ?", newSubcategoryID).Error; err != nil {
+			c.JSON(400, gin.H{"error": "Invalid subcategory"})
+			return
+		}
+		
+		product.SubcategoryID = &newSubcategoryID
+	} else {
+		// If subcategory_id is not provided, set it to nil
+		product.SubcategoryID = nil
+	}
 
 	// Handle multiple image updates
 	form, err := c.MultipartForm()
@@ -176,7 +383,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			var productImage models.ProductImage
 			if err := h.DB.Where("id = ? AND product_id = ?", imageID, product.ID).First(&productImage).Error; err == nil {
 				// Delete from Firebase
-				objectPath, err := extractObjectPath(productImage.ImageURL)
+				objectPath, err := utils.ExtractObjectPath(productImage.ImageURL)
 				if err == nil && objectPath != "" {
 					if err := firebase.DeleteFile(objectPath); err != nil {
 						log.Println("Failed to delete image from Firebase:", err)
@@ -229,7 +436,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		h.DB.Model(&models.ProductImage{}).
 			Where("product_id = ?", product.ID).
 			Update("is_primary", false)
-		
+
 		// Set selected image as primary
 		h.DB.Model(&models.ProductImage{}).
 			Where("id = ? AND product_id = ?", primaryImageID, product.ID).
@@ -241,7 +448,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		return
 	}
 
-	h.DB.Preload("Category").Preload("Images").First(&product, product.ID)
+	h.DB.Preload("Category").Preload("Subcategory").Preload("Images").First(&product, product.ID)
 	c.JSON(http.StatusOK, product)
 }
 
@@ -264,11 +471,11 @@ func (h *ProductHandler) DeleteProduct(c *gin.Context) {
 
 		if orderImageCount > 0 {
 			// Image is used in orders - keep in Firebase
-			log.Printf("Image %s is referenced in %d order(s) - preserving in Firebase storage", 
+			log.Printf("Image %s is referenced in %d order(s) - preserving in Firebase storage",
 				productImage.ImageURL, orderImageCount)
 		} else {
 			// Image not used in any order - safe to delete from Firebase
-			objectPath, err := extractObjectPath(productImage.ImageURL)
+			objectPath, err := utils.ExtractObjectPath(productImage.ImageURL)
 			if err == nil && objectPath != "" {
 				if err := firebase.DeleteFile(objectPath); err != nil {
 					log.Printf("Failed to delete image %s from Firebase: %v", productImage.ImageURL, err)
@@ -309,7 +516,7 @@ func (h *ProductHandler) GetProductsPaginated(c *gin.Context) {
 
 	// Search by name
 	if search := c.Query("search"); search != "" {
-		query = query.Where("name ILIKE ?", "%"+search+"%")
+		query = query.Where("item_name ILIKE ?", "%"+search+"%")
 	}
 
 	query.Model(&models.Product{}).Count(&total)
@@ -321,21 +528,4 @@ func (h *ProductHandler) GetProductsPaginated(c *gin.Context) {
 		"page":     page,
 		"limit":    limit,
 	})
-}
-
-// extractObjectPath extracts the storage object path from the full URL
-func extractObjectPath(url string) (string, error) {
-	const prefix = "https://storage.googleapis.com/"
-	if !strings.HasPrefix(url, prefix) {
-		return "", fmt.Errorf("invalid URL")
-	}
-
-	// Remove the prefix and bucket name
-	path := strings.TrimPrefix(url, prefix)
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid URL format")
-	}
-
-	return parts[1], nil
 }

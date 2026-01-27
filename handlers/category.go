@@ -16,7 +16,7 @@ type CategoryHandler struct {
 
 func (h *CategoryHandler) GetCategories(c *gin.Context) {
 	var categories []models.Category
-	if err := h.DB.Find(&categories).Error; err != nil {
+	if err := h.DB.Preload("Subcategories").Find(&categories).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch categories"})
 		return
 	}
@@ -28,7 +28,7 @@ func (h *CategoryHandler) GetCategory(c *gin.Context) {
 	id := c.Param("id")
 	var category models.Category
 
-	if err := h.DB.Preload("Products").Where("id = ?", id).First(&category).Error; err != nil {
+	if err := h.DB.Preload("Products").Preload("Subcategories").Where("id = ?", id).First(&category).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Category not found"})
 		return
 	}
@@ -76,6 +76,40 @@ func (h *CategoryHandler) UpdateCategory(c *gin.Context) {
 
 func (h *CategoryHandler) DeleteCategory(c *gin.Context) {
 	id := c.Param("id")
+	
+	// Check if category has associated products
+	var productCount int64
+	if err := h.DB.Model(&models.Product{}).Where("category_id = ?", id).Count(&productCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check category dependencies"})
+		return
+	}
+	
+	if productCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Cannot delete category with associated products",
+			"message": "Please reassign or delete the associated products first",
+			"product_count": productCount,
+		})
+		return
+	}
+	
+	// Check if category has subcategories
+	var subcategoryCount int64
+	if err := h.DB.Model(&models.Subcategory{}).Where("category_id = ?", id).Count(&subcategoryCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check category dependencies"})
+		return
+	}
+	
+	if subcategoryCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Cannot delete category with subcategories",
+			"message": "Please delete or reassign subcategories first",
+			"subcategory_count": subcategoryCount,
+		})
+		return
+	}
+	
+	// Safe to delete
 	if err := h.DB.Delete(&models.Category{}, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete category"})
 		return

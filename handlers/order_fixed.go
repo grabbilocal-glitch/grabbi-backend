@@ -44,13 +44,14 @@ func (h *OrderHandler) CreateOrderFixed(c *gin.Context) {
 	var orderItems []models.OrderItem
 
 	for _, item := range cartItems {
-		itemTotal := item.Product.Price * float64(item.Quantity)
+		currentPrice := item.Product.GetCurrentPrice()
+		itemTotal := currentPrice * float64(item.Quantity)
 		subtotal += itemTotal
 
 		orderItems = append(orderItems, models.OrderItem{
 			ProductID: item.ProductID,
 			Quantity:  item.Quantity,
-			Price:     item.Product.Price,
+			Price:     currentPrice,
 		})
 	}
 
@@ -88,13 +89,13 @@ func (h *OrderHandler) CreateOrderFixed(c *gin.Context) {
 			return
 		}
 
-		if product.Stock < item.Quantity {
+		if product.StockQuantity < item.Quantity {
 			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock for " + product.Name})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock for " + product.ItemName})
 			return
 		}
 
-		product.Stock -= item.Quantity
+		product.StockQuantity -= item.Quantity
 		tx.Save(&product)
 	}
 

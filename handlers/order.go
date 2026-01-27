@@ -52,7 +52,8 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		var primaryImage models.ProductImage
 		h.DB.Where("product_id = ? AND is_primary = ?", item.ProductID, true).First(&primaryImage)
 
-		itemTotal := item.Product.Price * float64(item.Quantity)
+		currentPrice := item.Product.GetCurrentPrice()
+		itemTotal := currentPrice * float64(item.Quantity)
 		subtotal += itemTotal
 
 		orderItems = append(orderItems, models.OrderItem{
@@ -60,7 +61,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 			ProductID: item.ProductID,
 			ImageURL:  primaryImage.ImageURL,
 			Quantity:  item.Quantity,
-			Price:     item.Product.Price,
+			Price:     currentPrice,
 		})
 	}
 
@@ -98,13 +99,13 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 			return
 		}
 
-		if product.Stock < item.Quantity {
+		if product.StockQuantity < item.Quantity {
 			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock for " + product.Name})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock for " + product.ItemName})
 			return
 		}
 
-		product.Stock -= item.Quantity
+		product.StockQuantity -= item.Quantity
 		tx.Save(&product)
 	}
 

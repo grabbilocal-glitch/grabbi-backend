@@ -13,6 +13,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	authHandler := &handlers.AuthHandler{DB: db}
 	productHandler := &handlers.ProductHandler{DB: db}
 	categoryHandler := &handlers.CategoryHandler{DB: db}
+	subcategoryHandler := &handlers.SubcategoryHandler{DB: db}
 	cartHandler := &handlers.CartHandler{DB: db}
 	orderHandler := &handlers.OrderHandler{DB: db}
 	promotionHandler := &handlers.PromotionHandler{DB: db}
@@ -31,6 +32,9 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 		// Public category routes
 		api.GET("/categories", categoryHandler.GetCategories)
 		api.GET("/categories/:id", categoryHandler.GetCategory)
+		
+		// Public subcategory routes
+		api.GET("/subcategories", subcategoryHandler.GetSubcategories)
 
 		// Public promotion routes
 		api.GET("/promotions", promotionHandler.GetPromotions)
@@ -64,14 +68,22 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	{
 		// Product management
 		admin.POST("/products", productHandler.CreateProduct)
+		admin.POST("/products/batch", productHandler.BatchImportProducts)
+		admin.GET("/products/batch/:id", productHandler.GetBatchJobStatus)
 		admin.PUT("/products/:id", productHandler.UpdateProduct)
 		admin.DELETE("/products/:id", productHandler.DeleteProduct)
 		admin.GET("/products", productHandler.GetProductsPaginated)
+		admin.GET("/products/export", productHandler.GetProductsExport)
 
 		// Category management
 		admin.POST("/categories", categoryHandler.CreateCategory)
 		admin.PUT("/categories/:id", categoryHandler.UpdateCategory)
 		admin.DELETE("/categories/:id", categoryHandler.DeleteCategory)
+		
+		// Subcategory management
+		admin.POST("/subcategories", subcategoryHandler.CreateSubcategory)
+		admin.PUT("/subcategories/:id", subcategoryHandler.UpdateSubcategory)
+		admin.DELETE("/subcategories/:id", subcategoryHandler.DeleteSubcategory)
 
 		// Order management
 		admin.PUT("/orders/:id/status", orderHandler.UpdateOrderStatus)

@@ -55,7 +55,7 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 	}
 
 	// Check stock
-	if product.Stock < req.Quantity {
+	if product.StockQuantity < req.Quantity {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock"})
 		return
 	}
@@ -67,8 +67,8 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 	if err == nil {
 		// Update quantity
 		cartItem.Quantity += req.Quantity
-		if cartItem.Quantity > product.Stock {
-			cartItem.Quantity = product.Stock
+		if cartItem.Quantity > product.StockQuantity {
+			cartItem.Quantity = product.StockQuantity
 		}
 		h.DB.Save(&cartItem)
 	} else {
@@ -112,7 +112,7 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 	// Check stock
 	var product models.Product
 	h.DB.Where("id = ?", cartItem.ProductID).First(&product)
-	if product.Stock < req.Quantity {
+	if product.StockQuantity < req.Quantity {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Insufficient stock"})
 		return
 	}
