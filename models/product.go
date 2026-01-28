@@ -51,7 +51,8 @@ type Product struct {
 
 	// Dietary and Restrictions
 	IsGlutenFree    bool `gorm:"default:false;index" json:"is_gluten_free"`    // Gluten free status
-	IsVegetarian    bool `gorm:"default:false;index" json:"is_vegetarian"`     // Vegetarian status (replaces IsVegan)
+	IsVegetarian    bool `gorm:"default:false;index" json:"is_vegetarian"`     // Vegetarian status
+	IsVegan         bool `gorm:"default:false;index" json:"is_vegan"`          // Vegan status
 	IsAgeRestricted bool `gorm:"default:false;index" json:"is_age_restricted"` // Age restricted flag
 	MinimumAge      *int `gorm:"default:null" json:"minimum_age,omitempty"`    // Minimum age for age-restricted items
 
@@ -62,9 +63,7 @@ type Product struct {
 	OnlineVisible bool   `gorm:"default:true;index" json:"online_visible"` // Visibility on online platform
 	Status        string `gorm:"default:active;index" json:"status"`       // Product status (active, inactive)
 	Notes         string `gorm:"type:text" json:"notes"`                   // Additional notes
-
-	PackSize string `json:"pack_size"`
-	IsVegan  bool   `gorm:"default:false" json:"is_vegan"`
+	PackSize      string `json:"pack_size"`
 
 	// Timestamps
 	CreatedAt time.Time      `json:"created_at"`

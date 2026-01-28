@@ -42,6 +42,9 @@ func (h *ProductHandler) GetProducts(c *gin.Context) {
 		query = query.Where("online_visible = ?", true)
 	}
 
+	// Filter by active status
+	query = query.Where("status = ?", "active")
+
 	// Search by name
 	if search := c.Query("search"); search != "" {
 		query = query.Where("item_name ILIKE ?", "%"+search+"%")
@@ -59,7 +62,7 @@ func (h *ProductHandler) GetProduct(c *gin.Context) {
 	id := c.Param("id")
 	var product models.Product
 
-	if err := h.DB.Preload("Category").Preload("Images").Where("id = ?", id).First(&product).Error; err != nil {
+	if err := h.DB.Preload("Category").Preload("Images").Where("id = ? AND status = ?", id, "active").First(&product).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 		return
 	}
@@ -71,7 +74,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 
 	// Basic Info
 	product.SKU = c.PostForm("sku")
-	
+
 	// Auto-generate SKU if empty
 	if product.SKU == "" {
 		generatedSKU, err := generateSKU(h.DB)
@@ -82,7 +85,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 		product.SKU = generatedSKU
 		log.Printf("Auto-generated SKU: %s", generatedSKU)
 	}
-	
+
 	product.ItemName = c.PostForm("item_name")
 	product.ShortDescription = c.PostForm("short_description")
 	product.LongDescription = c.PostForm("long_description")
@@ -92,12 +95,12 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	// Pricing
 	product.CostPrice, _ = strconv.ParseFloat(c.PostForm("cost_price"), 64)
 	product.RetailPrice, _ = strconv.ParseFloat(c.PostForm("retail_price"), 64)
-	
+
 	if promoPrice := c.PostForm("promotion_price"); promoPrice != "" {
 		price, _ := strconv.ParseFloat(promoPrice, 64)
 		product.PromotionPrice = &price
 	}
-	
+
 	// Parse date fields (format: YYYY-MM-DD)
 	if promoStart := c.PostForm("promotion_start"); promoStart != "" {
 		if parsedTime, err := time.Parse("2006-01-02", promoStart); err == nil {
@@ -106,7 +109,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 			log.Printf("Failed to parse promotion_start: %s, error: %v", promoStart, err)
 		}
 	}
-	
+
 	if promoEnd := c.PostForm("promotion_end"); promoEnd != "" {
 		if parsedTime, err := time.Parse("2006-01-02", promoEnd); err == nil {
 			product.PromotionEnd = &parsedTime
@@ -114,7 +117,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 			log.Printf("Failed to parse promotion_end: %s, error: %v", promoEnd, err)
 		}
 	}
-	
+
 	if expiryDate := c.PostForm("expiry_date"); expiryDate != "" {
 		if parsedTime, err := time.Parse("2006-01-02", expiryDate); err == nil {
 			product.ExpiryDate = &parsedTime
@@ -122,7 +125,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 			log.Printf("Failed to parse expiry_date: %s, error: %v", expiryDate, err)
 		}
 	}
-	
+
 	product.GrossMargin, _ = strconv.ParseFloat(c.PostForm("gross_margin"), 64)
 	product.StaffDiscount, _ = strconv.ParseFloat(c.PostForm("staff_discount"), 64)
 	product.TaxRate, _ = strconv.ParseFloat(c.PostForm("tax_rate"), 64)
@@ -131,7 +134,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	product.StockQuantity, _ = strconv.Atoi(c.PostForm("stock_quantity"))
 	product.ReorderLevel, _ = strconv.Atoi(c.PostForm("reorder_level"))
 	product.ShelfLocation = c.PostForm("shelf_location")
-	
+
 	product.WeightVolume, _ = strconv.ParseFloat(c.PostForm("weight_volume"), 64)
 	product.UnitOfMeasure = c.PostForm("unit_of_measure")
 
@@ -140,7 +143,7 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	product.IsGlutenFree = c.PostForm("is_gluten_free") == "true"
 	product.IsVegetarian = c.PostForm("is_vegetarian") == "true"
 	product.IsAgeRestricted = c.PostForm("is_age_restricted") == "true"
-	
+
 	if minAge := c.PostForm("minimum_age"); minAge != "" {
 		age, _ := strconv.Atoi(minAge)
 		product.MinimumAge = &age
@@ -273,7 +276,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		price, _ := strconv.ParseFloat(promoPrice, 64)
 		product.PromotionPrice = &price
 	}
-	
+
 	// Parse date fields (format: YYYY-MM-DD)
 	if promoStart := c.PostForm("promotion_start"); promoStart != "" {
 		if parsedTime, err := time.Parse("2006-01-02", promoStart); err == nil {
@@ -282,7 +285,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			log.Printf("Failed to parse promotion_start: %s, error: %v", promoStart, err)
 		}
 	}
-	
+
 	if promoEnd := c.PostForm("promotion_end"); promoEnd != "" {
 		if parsedTime, err := time.Parse("2006-01-02", promoEnd); err == nil {
 			product.PromotionEnd = &parsedTime
@@ -290,7 +293,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			log.Printf("Failed to parse promotion_end: %s, error: %v", promoEnd, err)
 		}
 	}
-	
+
 	if expiryDate := c.PostForm("expiry_date"); expiryDate != "" {
 		if parsedTime, err := time.Parse("2006-01-02", expiryDate); err == nil {
 			product.ExpiryDate = &parsedTime
@@ -298,7 +301,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			log.Printf("Failed to parse expiry_date: %s, error: %v", expiryDate, err)
 		}
 	}
-	
+
 	product.GrossMargin, _ = strconv.ParseFloat(c.PostForm("gross_margin"), 64)
 	product.StaffDiscount, _ = strconv.ParseFloat(c.PostForm("staff_discount"), 64)
 	product.TaxRate, _ = strconv.ParseFloat(c.PostForm("tax_rate"), 64)
@@ -317,7 +320,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 	product.IsGlutenFree = c.PostForm("is_gluten_free") == "true"
 	product.IsVegetarian = c.PostForm("is_vegetarian") == "true"
 	product.IsAgeRestricted = c.PostForm("is_age_restricted") == "true"
-	
+
 	if minAge := c.PostForm("minimum_age"); minAge != "" {
 		age, _ := strconv.Atoi(minAge)
 		product.MinimumAge = &age
@@ -342,13 +345,13 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "Invalid category ID"})
 			return
 		}
-		
+
 		// Validate category exists
 		if err := h.DB.First(&models.Category{}, "id = ?", newCategoryID).Error; err != nil {
 			c.JSON(400, gin.H{"error": "Invalid category"})
 			return
 		}
-		
+
 		product.CategoryID = newCategoryID
 	}
 
@@ -359,13 +362,13 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "Invalid subcategory ID"})
 			return
 		}
-		
+
 		// Validate subcategory exists
 		if err := h.DB.First(&models.Subcategory{}, "id = ?", newSubcategoryID).Error; err != nil {
 			c.JSON(400, gin.H{"error": "Invalid subcategory"})
 			return
 		}
-		
+
 		product.SubcategoryID = &newSubcategoryID
 	} else {
 		// If subcategory_id is not provided, set it to nil
