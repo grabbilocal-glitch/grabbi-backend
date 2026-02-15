@@ -534,7 +534,7 @@ func TestDeleteCategoryDBErrorOnProductCount(t *testing.T) {
 		"staff_discount" REAL DEFAULT 0,
 		"tax_rate" REAL DEFAULT 0,
 		"batch_number" TEXT,
-		"barcode" TEXT UNIQUE,
+		"barcode" TEXT,
 		"stock_quantity" INTEGER DEFAULT 0,
 		"reorder_level" INTEGER DEFAULT 0,
 		"shelf_location" TEXT,

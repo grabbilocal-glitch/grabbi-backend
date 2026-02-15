@@ -78,6 +78,13 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 
+	// Replace the unconditional unique index on barcode with a partial one
+	// that only enforces uniqueness for non-empty barcodes. Empty barcodes
+	// (products without a barcode) must be allowed without constraint violations.
+	db.Exec(`DROP INDEX IF EXISTS idx_products_barcode`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique
+		ON products (barcode) WHERE barcode != '' AND deleted_at IS NULL`)
+
 	// Create SKU sequence and function for auto-generating product SKUs
 	if err := db.Exec(`CREATE SEQUENCE IF NOT EXISTS sku_seq START 1;`).Error; err != nil {
 		return fmt.Errorf("failed to create sku_seq sequence: %w", err)

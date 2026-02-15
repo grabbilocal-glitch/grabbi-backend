@@ -349,11 +349,43 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 	})
 
 	if len(imagesToCreate) > 0 {
-		const batchSize = 100
-		if err := h.DB.CreateInBatches(imagesToCreate, batchSize).Error; err != nil {
-			log.Printf("Error bulk creating images: %v", err)
-		} else {
-			log.Printf("Bulk created %d images", len(imagesToCreate))
+		// Verify which product IDs actually exist before inserting images
+		// (products may have failed to create due to constraint violations)
+		productIDSet := make(map[uuid.UUID]bool)
+		for _, img := range imagesToCreate {
+			productIDSet[img.ProductID] = true
+		}
+		productIDList := make([]uuid.UUID, 0, len(productIDSet))
+		for id := range productIDSet {
+			productIDList = append(productIDList, id)
+		}
+
+		var existingIDs []uuid.UUID
+		h.DB.Model(&models.Product{}).Unscoped().Where("id IN ?", productIDList).Pluck("id", &existingIDs)
+		existingIDSet := make(map[uuid.UUID]bool)
+		for _, id := range existingIDs {
+			existingIDSet[id] = true
+		}
+
+		validImages := make([]models.ProductImage, 0, len(imagesToCreate))
+		for _, img := range imagesToCreate {
+			if existingIDSet[img.ProductID] {
+				validImages = append(validImages, img)
+			} else {
+				log.Printf("Skipping image for non-existent product %s: %s", img.ProductID, img.ImageURL)
+			}
+		}
+
+		if len(validImages) > 0 {
+			const batchSize = 100
+			if err := h.DB.CreateInBatches(validImages, batchSize).Error; err != nil {
+				log.Printf("Error bulk creating images: %v", err)
+			} else {
+				log.Printf("Bulk created %d images", len(validImages))
+			}
+		}
+		if skipped := len(imagesToCreate) - len(validImages); skipped > 0 {
+			log.Printf("Skipped %d images for non-existent products", skipped)
 		}
 	}
 

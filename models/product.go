@@ -28,7 +28,7 @@ type Product struct {
 
 	// Product Identifiers
 	BatchNumber string `gorm:"index" json:"batch_number"`        // Batch number
-	Barcode     string `gorm:"uniqueIndex;index" json:"barcode"` // Product barcode
+	Barcode     string `gorm:"index" json:"barcode"` // Product barcode
 
 	// Inventory
 	StockQuantity int    `gorm:"default:0;index" json:"stock_quantity"` // Replaces Stock field
