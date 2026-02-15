@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"grabbi-backend/models"
+	"grabbi-backend/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,7 +30,7 @@ func (h *SubcategoryHandler) GetSubcategories(c *gin.Context) {
 func (h *SubcategoryHandler) CreateSubcategory(c *gin.Context) {
 	var subcategory models.Subcategory
 	if err := c.ShouldBindJSON(&subcategory); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": utils.SanitizeValidationError(err)})
 		return
 	}
 
@@ -66,7 +67,7 @@ func (h *SubcategoryHandler) UpdateSubcategory(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&subcategory); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": utils.SanitizeValidationError(err)})
 		return
 	}
 

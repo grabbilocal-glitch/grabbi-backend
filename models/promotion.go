@@ -14,6 +14,8 @@ type Promotion struct {
 	Image       string         `json:"image"`
 	ProductURL  string         `gorm:"column:product_url" json:"product_url"`
 	IsActive    bool           `gorm:"default:true" json:"is_active"`
+	StartDate *time.Time `json:"start_date"`
+	EndDate   *time.Time `json:"end_date"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`

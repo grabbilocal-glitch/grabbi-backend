@@ -61,7 +61,7 @@ func cleanURL(url string) string {
 }
 
 // uploadImagesConcurrently uploads multiple images concurrently with semaphore limit
-func uploadImagesConcurrently(productID string, imageUrls []string) ([]models.ProductImage, []error) {
+func uploadImagesConcurrently(storage firebase.StorageClient, productID string, imageUrls []string) ([]models.ProductImage, []error) {
 	const maxConcurrent = 3
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, maxConcurrent)
@@ -82,7 +82,7 @@ func uploadImagesConcurrently(productID string, imageUrls []string) ([]models.Pr
 			defer wg.Done()
 			defer func() { <-semaphore }() // Release
 
-			firebaseURL, err := firebase.DownloadAndUploadImage(imageURL, productID)
+			firebaseURL, err := storage.DownloadAndUploadImage(imageURL, productID)
 			results <- imageResult{
 				index: idx,
 				url:   firebaseURL,
@@ -119,7 +119,7 @@ func (h *ProductHandler) BatchImportProducts(c *gin.Context) {
 	var req dtos.ProductImportRequest
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": utils.SanitizeValidationError(err)})
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *ProductHandler) BatchImportProducts(c *gin.Context) {
 	job := utils.Store.CreateJob(len(req.Products))
 
 	// Start background processing
-	go h.processBatchImport(job, req.Products)
+	go h.processBatchImport(job, req.Products, req.DeleteMissing)
 
 	// Return immediately with job ID
 	c.JSON(http.StatusAccepted, gin.H{
@@ -156,7 +156,7 @@ func (h *ProductHandler) GetBatchJobStatus(c *gin.Context) {
 }
 
 // processBatchImport processes products in background with concurrency and bulk operations
-func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.ProductImportItem) {
+func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.ProductImportItem, deleteMissing bool) {
 	// Mark job as processing
 	utils.Store.SetProcessing(job.ID)
 
@@ -225,6 +225,12 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 				progress := int(float64(processedCount) / float64(totalProducts) * 85)
 				utils.Store.UpdateJob(job.ID, func(j *dtos.BatchJob) {
 					j.Progress = progress
+					j.Failed++
+					j.Errors = append(j.Errors, dtos.JobError{
+						Row:     idx + 2, // +2 for 1-indexed rows and header
+						Product: data.ItemName,
+						Fields:  map[string]string{"error": err.Error()},
+					})
 				})
 				batchMutex.Unlock()
 				return
@@ -278,6 +284,54 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 		}
 	}
 
+	// Create FranchiseProduct entries for products with franchise_ids
+	var franchiseProductsToCreate []models.FranchiseProduct
+	for _, productData := range products {
+		if len(productData.FranchiseIDs) == 0 {
+			continue
+		}
+		// Find the product by SKU or name to get its ID
+		var product models.Product
+		if productData.SKU != "" {
+			h.DB.Where("sku = ?", productData.SKU).First(&product)
+		} else {
+			h.DB.Where("item_name = ?", productData.ItemName).First(&product)
+		}
+		if product.ID == uuid.Nil {
+			continue
+		}
+		for _, fidStr := range productData.FranchiseIDs {
+			fidStr = strings.TrimSpace(fidStr)
+			if fidStr == "" {
+				continue
+			}
+			parsedFID, err := uuid.Parse(fidStr)
+			if err != nil {
+				log.Printf("Invalid franchise ID in batch import: %s", fidStr)
+				continue
+			}
+			// Check if association already exists
+			var existing models.FranchiseProduct
+			if h.DB.Where("franchise_id = ? AND product_id = ?", parsedFID, product.ID).First(&existing).Error == nil {
+				continue // Already exists
+			}
+			franchiseProductsToCreate = append(franchiseProductsToCreate, models.FranchiseProduct{
+				FranchiseID:   parsedFID,
+				ProductID:     product.ID,
+				StockQuantity: productData.StockQuantity,
+				ReorderLevel:  productData.ReorderLevel,
+				IsAvailable:   productData.Status == "active",
+			})
+		}
+	}
+	if len(franchiseProductsToCreate) > 0 {
+		if err := h.DB.CreateInBatches(franchiseProductsToCreate, 100).Error; err != nil {
+			log.Printf("Error creating franchise product associations: %v", err)
+		} else {
+			log.Printf("Created %d franchise product associations", len(franchiseProductsToCreate))
+		}
+	}
+
 	utils.Store.UpdateJob(job.ID, func(j *dtos.BatchJob) {
 		j.Progress = 87
 	})
@@ -307,7 +361,12 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 		j.Progress = 90
 	})
 
-	h.deleteProductsNotInImport(job, importedProductIDs)
+	// Only delete products not in the import if explicitly requested
+	if deleteMissing {
+		h.deleteProductsNotInImport(job, importedProductIDs)
+	} else {
+		log.Println("Skipping deletion of products not in import (delete_missing=false)")
+	}
 
 	// Mark job as completed after all operations are done
 	utils.Store.CompleteJob(job.ID, dtos.JobStatusCompleted)
@@ -619,7 +678,7 @@ func (h *ProductHandler) prepareProductForBatch(
 								// Image not used in any order - safe to delete from Firebase
 								objectPath, _ := utils.ExtractObjectPath(oldImage.ImageURL)
 								if objectPath != "" {
-									if err := firebase.DeleteFile(objectPath); err != nil {
+									if err := h.Storage.DeleteFile(objectPath); err != nil {
 										if !strings.Contains(err.Error(), "object doesn't exist") {
 											log.Printf("Failed to delete image from Firebase: %v", err)
 										}
@@ -643,7 +702,7 @@ func (h *ProductHandler) prepareProductForBatch(
 			log.Printf("Product %s - Uploading %d images to Firebase", product.ItemName, len(cleanedURLs))
 
 			// Upload images to Firebase and get Firebase URLs
-			uploadResults, uploadErrors := uploadImagesConcurrently(product.ID.String(), cleanedURLs)
+			uploadResults, uploadErrors := uploadImagesConcurrently(h.Storage, product.ID.String(), cleanedURLs)
 
 			// Log any errors
 			for i, err := range uploadErrors {
@@ -691,7 +750,7 @@ func (h *ProductHandler) prepareProductForBatch(
 						// Image not used in any order - safe to delete from Firebase
 						objectPath, _ := utils.ExtractObjectPath(oldImage.ImageURL)
 						if objectPath != "" {
-							if err := firebase.DeleteFile(objectPath); err != nil {
+							if err := h.Storage.DeleteFile(objectPath); err != nil {
 								if !strings.Contains(err.Error(), "object doesn't exist") {
 									log.Printf("Failed to delete image from Firebase: %v", err)
 								}
@@ -884,7 +943,7 @@ func (h *ProductHandler) deleteProductsBatch(products []models.Product) {
 
 				objectPath, _ := utils.ExtractObjectPath(image.ImageURL)
 				if objectPath != "" {
-					if err := firebase.DeleteFile(objectPath); err != nil {
+					if err := h.Storage.DeleteFile(objectPath); err != nil {
 						// Only log if not a 404 error
 						if !strings.Contains(err.Error(), "object doesn't exist") {
 							log.Printf("Failed to delete image %s from Firebase: %v", image.ImageURL, err)

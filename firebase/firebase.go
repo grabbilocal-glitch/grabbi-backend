@@ -6,17 +6,110 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/storage"
 	firebase "firebase.google.com/go"
-	"google.golang.org/api/option"
 	"github.com/google/uuid"
+	"google.golang.org/api/option"
 )
 
 var App *firebase.App
+
+// sanitizeFilename removes special characters from filenames and limits length.
+func sanitizeFilename(filename string) string {
+	// Replace path separators and other dangerous characters
+	re := regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+	sanitized := re.ReplaceAllString(filename, "_")
+
+	// Limit length to 100 characters
+	if len(sanitized) > 100 {
+		sanitized = sanitized[:100]
+	}
+
+	// Ensure it's not empty
+	if sanitized == "" || sanitized == "." || sanitized == ".." {
+		sanitized = "file"
+	}
+
+	return sanitized
+}
+
+// isPrivateIP checks whether an IP address is a private/reserved address.
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []struct {
+		network *net.IPNet
+	}{
+		{parseCIDR("10.0.0.0/8")},
+		{parseCIDR("172.16.0.0/12")},
+		{parseCIDR("192.168.0.0/16")},
+		{parseCIDR("127.0.0.0/8")},
+		{parseCIDR("169.254.0.0/16")},
+		{parseCIDR("0.0.0.0/8")},
+		{parseCIDR("::1/128")},
+		{parseCIDR("fc00::/7")},
+		{parseCIDR("fe80::/10")},
+	}
+
+	for _, r := range privateRanges {
+		if r.network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseCIDR(cidr string) *net.IPNet {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(fmt.Sprintf("invalid CIDR: %s", cidr))
+	}
+	return network
+}
+
+// validateExternalURL validates that a URL is safe to fetch (prevents SSRF).
+func validateExternalURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Only allow http and https schemes
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("URL scheme '%s' is not allowed; only http and https are permitted", parsed.Scheme)
+	}
+
+	// Resolve hostname to IP addresses
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL has no hostname")
+	}
+
+	// Check for localhost
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("requests to localhost are not allowed")
+	}
+
+	// Resolve DNS
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve hostname '%s': %v", host, err)
+	}
+
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("URL resolves to private IP address %s, which is not allowed", ip.String())
+		}
+	}
+
+	return nil
+}
 
 func Init() {
 	credJSON := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -65,7 +158,7 @@ func UploadProductImage(
 	objectPath := fmt.Sprintf(
 		"products/%d_%s",
 		time.Now().Unix(),
-		filename,
+		sanitizeFilename(filename),
 	)
 
 	bucket, err := client.Bucket(bucketName)
@@ -73,12 +166,22 @@ func UploadProductImage(
 		return "", err
 	}
 
-	wc := bucket.Object(objectPath).NewWriter(ctx)
+	obj := bucket.Object(objectPath)
+	wc := obj.NewWriter(ctx)
 	wc.ContentType = contentType
-	defer wc.Close()
 
 	if _, err := io.Copy(wc, file); err != nil {
+		wc.Close()
 		return "", err
+	}
+
+	if err := wc.Close(); err != nil {
+		return "", fmt.Errorf("failed to finalize upload: %v", err)
+	}
+
+	// Make object publicly readable so the URL works without authentication
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+		log.Printf("Warning: failed to set public ACL on %s: %v", objectPath, err)
 	}
 
 	return fmt.Sprintf(
@@ -143,7 +246,7 @@ func UploadPromotionImage(
 	objectPath := fmt.Sprintf(
 		"promotions/%d_%s",
 		time.Now().Unix(),
-		filename,
+		sanitizeFilename(filename),
 	)
 
 	bucket, err := client.Bucket(bucketName)
@@ -151,12 +254,22 @@ func UploadPromotionImage(
 		return "", err
 	}
 
-	wc := bucket.Object(objectPath).NewWriter(ctx)
+	obj := bucket.Object(objectPath)
+	wc := obj.NewWriter(ctx)
 	wc.ContentType = contentType
-	defer wc.Close()
 
 	if _, err := io.Copy(wc, file); err != nil {
+		wc.Close()
 		return "", err
+	}
+
+	if err := wc.Close(); err != nil {
+		return "", fmt.Errorf("failed to finalize upload: %v", err)
+	}
+
+	// Make object publicly readable so the URL works without authentication
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+		log.Printf("Warning: failed to set public ACL on %s: %v", objectPath, err)
 	}
 
 	return fmt.Sprintf(
@@ -171,6 +284,11 @@ func UploadPromotionImage(
 func DownloadAndUploadImage(imageURL string, productID string) (string, error) {
 	if App == nil {
 		return "", fmt.Errorf("firebase app not initialized")
+	}
+
+	// SSRF prevention: validate the URL before fetching
+	if err := validateExternalURL(imageURL); err != nil {
+		return "", fmt.Errorf("URL validation failed for %s: %v", imageURL, err)
 	}
 
 	ctx := context.Background()
@@ -194,7 +312,7 @@ func DownloadAndUploadImage(imageURL string, productID string) (string, error) {
 	// This prevents concurrent uploads from overwriting each other
 	objectPath := fmt.Sprintf(
 		"products/%s_%s.jpg",
-		productID,
+		sanitizeFilename(productID),
 		uuid.New().String()[:8], // Use first 8 chars of UUID for uniqueness
 	)
 
@@ -225,12 +343,22 @@ func DownloadAndUploadImage(imageURL string, productID string) (string, error) {
 	}
 
 	// Upload to Firebase
-	wc := bucket.Object(objectPath).NewWriter(ctx)
+	obj := bucket.Object(objectPath)
+	wc := obj.NewWriter(ctx)
 	wc.ContentType = contentType
-	defer wc.Close()
 
 	if _, err := io.Copy(wc, resp.Body); err != nil {
+		wc.Close()
 		return "", fmt.Errorf("failed to upload image to Firebase: %v", err)
+	}
+
+	if err := wc.Close(); err != nil {
+		return "", fmt.Errorf("failed to finalize upload: %v", err)
+	}
+
+	// Make object publicly readable so the URL works without authentication
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+		log.Printf("Warning: failed to set public ACL on %s: %v", objectPath, err)
 	}
 
 	return fmt.Sprintf(

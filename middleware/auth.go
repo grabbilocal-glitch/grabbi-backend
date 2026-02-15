@@ -35,6 +35,9 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		c.Set("user_id", claims.UserID)
 		c.Set("user_role", claims.Role)
+		if claims.FranchiseID != nil {
+			c.Set("franchise_id", *claims.FranchiseID)
+		}
 		c.Next()
 	}
 }
@@ -44,6 +47,47 @@ func AdminMiddleware() gin.HandlerFunc {
 		role, exists := c.Get("user_role")
 		if !exists || role != "admin" {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// FranchiseMiddleware requires the user to be a franchise_owner or franchise_staff
+// and have a franchise_id in their token.
+func FranchiseMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("user_role")
+		if !exists {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Franchise access required"})
+			c.Abort()
+			return
+		}
+
+		roleStr := role.(string)
+		if roleStr != "franchise_owner" && roleStr != "franchise_staff" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Franchise access required"})
+			c.Abort()
+			return
+		}
+
+		if _, exists := c.Get("franchise_id"); !exists {
+			c.JSON(http.StatusForbidden, gin.H{"error": "No franchise associated with this account"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// FranchiseOwnerMiddleware requires the user to be specifically a franchise_owner.
+func FranchiseOwnerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("user_role")
+		if !exists || role != "franchise_owner" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Franchise owner access required"})
 			c.Abort()
 			return
 		}

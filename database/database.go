@@ -1,6 +1,8 @@
 package database
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -57,6 +59,14 @@ func Migrate(db *gorm.DB) error {
 		&models.Order{},
 		&models.OrderItem{},
 		&models.Promotion{},
+		&models.Franchise{},
+		&models.StoreHours{},
+		&models.FranchiseProduct{},
+		&models.FranchiseStaff{},
+		&models.FranchisePromotion{},
+		&models.PasswordResetToken{},
+		&models.LoyaltyHistory{},
+		&models.RefreshToken{},
 	); err != nil {
 		return err
 	}
@@ -68,6 +78,18 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 
+	// Create SKU sequence and function for auto-generating product SKUs
+	if err := db.Exec(`CREATE SEQUENCE IF NOT EXISTS sku_seq START 1;`).Error; err != nil {
+		return fmt.Errorf("failed to create sku_seq sequence: %w", err)
+	}
+	if err := db.Exec(`
+		CREATE OR REPLACE FUNCTION generate_next_sku() RETURNS TEXT AS $$
+			SELECT 'GRB-' || LPAD(nextval('sku_seq')::TEXT, 6, '0');
+		$$ LANGUAGE SQL;
+	`).Error; err != nil {
+		return fmt.Errorf("failed to create generate_next_sku function: %w", err)
+	}
+
 	return nil
 }
 
@@ -77,9 +99,20 @@ func CreateDefaultAdmin(db *gorm.DB) error {
 
 	if adminEmail == "" {
 		adminEmail = "admin@grabbi.com"
+		log.Println("WARNING: ADMIN_EMAIL not set, defaulting to admin@grabbi.com")
 	}
 	if adminPassword == "" {
-		adminPassword = "admin123"
+		// Generate a random password and print it to stdout
+		randomBytes := make([]byte, 16)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return fmt.Errorf("failed to generate random admin password: %w", err)
+		}
+		adminPassword = hex.EncodeToString(randomBytes)
+		log.Println("WARNING: ADMIN_PASSWORD not set. Generated random admin password:")
+		fmt.Printf("\n========================================\n")
+		fmt.Printf("  GENERATED ADMIN PASSWORD: %s\n", adminPassword)
+		fmt.Printf("  Save this password! It will not be shown again.\n")
+		fmt.Printf("========================================\n\n")
 	}
 
 	var existingUser models.User
@@ -106,6 +139,74 @@ func CreateDefaultAdmin(db *gorm.DB) error {
 	}
 
 	log.Printf("Default admin created: %s", adminEmail)
+	return nil
+}
+
+func CreateDefaultFranchise(db *gorm.DB) error {
+	// Check if a franchise already exists
+	var count int64
+	db.Model(&models.Franchise{}).Count(&count)
+	if count > 0 {
+		return nil
+	}
+
+	// Find the admin user to assign as owner
+	var admin models.User
+	if err := db.Where("role = ?", "admin").First(&admin).Error; err != nil {
+		log.Printf("No admin user found to assign as franchise owner, skipping default franchise creation")
+		return nil
+	}
+
+	franchise := models.Franchise{
+		Name:            "Grabbi Main Store",
+		Slug:            "grabbi-main",
+		OwnerID:         admin.ID,
+		Address:         "London, UK",
+		City:            "London",
+		PostCode:        "EC1A 1BB",
+		Latitude:        51.5074,
+		Longitude:       -0.1278,
+		DeliveryRadius:  5,
+		DeliveryFee:     4.99,
+		FreeDeliveryMin: 50,
+		IsActive:        true,
+	}
+
+	if err := db.Create(&franchise).Error; err != nil {
+		return fmt.Errorf("failed to create default franchise: %w", err)
+	}
+
+	// Create default store hours (Mon-Sun, 9am-9pm)
+	for day := 0; day <= 6; day++ {
+		hours := models.StoreHours{
+			FranchiseID: franchise.ID,
+			DayOfWeek:   day,
+			OpenTime:    "09:00",
+			CloseTime:   "21:00",
+			IsClosed:    false,
+		}
+		db.Create(&hours)
+	}
+
+	// Backfill all existing products into FranchiseProduct for this franchise
+	var products []models.Product
+	db.Find(&products)
+	for _, product := range products {
+		fp := models.FranchiseProduct{
+			FranchiseID:   franchise.ID,
+			ProductID:     product.ID,
+			StockQuantity: product.StockQuantity,
+			ReorderLevel:  product.ReorderLevel,
+			ShelfLocation: product.ShelfLocation,
+			IsAvailable:   product.Status == "active",
+		}
+		db.Create(&fp)
+	}
+
+	// Associate all existing orders with this franchise
+	db.Exec("UPDATE orders SET franchise_id = ? WHERE franchise_id IS NULL", franchise.ID)
+
+	log.Printf("Default franchise created: %s (ID: %s)", franchise.Name, franchise.ID)
 	return nil
 }
 

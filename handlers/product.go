@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"grabbi-backend/firebase"
@@ -16,19 +19,65 @@ import (
 )
 
 type ProductHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage firebase.StorageClient
 }
 
-// generateSKU generates a unique SKU using database sequence
+// generateSKU generates a unique SKU using database sequence, with Go-level fallback
 func generateSKU(db *gorm.DB) (string, error) {
 	var sku string
 	if err := db.Raw("SELECT generate_next_sku()").Scan(&sku).Error; err != nil {
-		return "", err
+		// Fallback: generate SKU using timestamp + random suffix
+		log.Printf("DB SKU generation failed, using fallback: %v", err)
+		sku = fmt.Sprintf("GRB-%d%04d", time.Now().Unix()%100000, rand.Intn(10000))
+		return sku, nil
 	}
 	return sku, nil
 }
 
 func (h *ProductHandler) GetProducts(c *gin.Context) {
+	// If franchise_id provided, return products with franchise overrides merged
+	if franchiseID := c.Query("franchise_id"); franchiseID != "" {
+		var fps []models.FranchiseProduct
+		fpQuery := h.DB.Preload("Product").Preload("Product.Category").Preload("Product.Images").
+			Where("franchise_id = ? AND is_available = ?", franchiseID, true)
+
+		if categoryID := c.Query("category_id"); categoryID != "" {
+			fpQuery = fpQuery.Joins("JOIN products ON products.id = franchise_products.product_id").
+				Where("products.category_id = ?", categoryID)
+		}
+		if search := c.Query("search"); search != "" {
+			fpQuery = fpQuery.Joins("JOIN products p2 ON p2.id = franchise_products.product_id").
+				Where("LOWER(p2.item_name) LIKE LOWER(?)", "%"+search+"%")
+		}
+
+		if err := fpQuery.Find(&fps).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch products"})
+			return
+		}
+
+		// Return products with overrides applied
+		var products []models.Product
+		for _, fp := range fps {
+			p := fp.Product
+			if fp.RetailPriceOverride != nil {
+				p.RetailPrice = *fp.RetailPriceOverride
+			}
+			if fp.PromotionPriceOverride != nil {
+				p.PromotionPrice = fp.PromotionPriceOverride
+			}
+			p.StockQuantity = fp.StockQuantity
+			p.ReorderLevel = fp.ReorderLevel
+			if fp.ShelfLocation != "" {
+				p.ShelfLocation = fp.ShelfLocation
+			}
+			products = append(products, p)
+		}
+		c.JSON(http.StatusOK, products)
+		return
+	}
+
+	// Default: return master catalog
 	var products []models.Product
 	query := h.DB.Preload("Category").Preload("Images")
 
@@ -47,7 +96,7 @@ func (h *ProductHandler) GetProducts(c *gin.Context) {
 
 	// Search by name
 	if search := c.Query("search"); search != "" {
-		query = query.Where("item_name ILIKE ?", "%"+search+"%")
+		query = query.Where("LOWER(item_name) LIKE LOWER(?)", "%"+search+"%")
 	}
 
 	if err := query.Find(&products).Error; err != nil {
@@ -209,13 +258,19 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	// Upload images and create product image records
 	var productImages []models.ProductImage
 	for i, fileHeader := range files {
+		// Validate file upload (content type + size)
+		if err := utils.ValidateFileUpload(fileHeader); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
 		file, err := fileHeader.Open()
 		if err != nil {
 			c.JSON(400, gin.H{"error": "Invalid image"})
 			return
 		}
 
-		imageURL, err := firebase.UploadProductImage(
+		imageURL, err := h.Storage.UploadProductImage(
 			file,
 			fileHeader.Filename,
 			fileHeader.Header.Get("Content-Type"),
@@ -240,6 +295,32 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	if err := h.DB.Create(&productImages).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save product images"})
 		return
+	}
+
+	// Handle franchise associations
+	if franchiseIDsStr := c.PostForm("franchise_ids"); franchiseIDsStr != "" {
+		franchiseIDs := strings.Split(franchiseIDsStr, ",")
+		for _, fidStr := range franchiseIDs {
+			fidStr = strings.TrimSpace(fidStr)
+			if fidStr == "" {
+				continue
+			}
+			parsedFID, err := uuid.Parse(fidStr)
+			if err != nil {
+				log.Printf("Invalid franchise ID in create product: %s", fidStr)
+				continue
+			}
+			fp := models.FranchiseProduct{
+				FranchiseID:   parsedFID,
+				ProductID:     product.ID,
+				StockQuantity: product.StockQuantity,
+				ReorderLevel:  product.ReorderLevel,
+				IsAvailable:   product.Status == "active",
+			}
+			if err := h.DB.Create(&fp).Error; err != nil {
+				log.Printf("Failed to create franchise product link for franchise %s: %v", fidStr, err)
+			}
+		}
 	}
 
 	h.DB.Preload("Category").Preload("Images").First(&product, product.ID)
@@ -388,7 +469,7 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 				// Delete from Firebase
 				objectPath, err := utils.ExtractObjectPath(productImage.ImageURL)
 				if err == nil && objectPath != "" {
-					if err := firebase.DeleteFile(objectPath); err != nil {
+					if err := h.Storage.DeleteFile(objectPath); err != nil {
 						log.Println("Failed to delete image from Firebase:", err)
 					}
 				}
@@ -401,13 +482,19 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		if len(files) > 0 {
 			var newProductImages []models.ProductImage
 			for i, fileHeader := range files {
+				// Validate file upload (content type + size)
+				if err := utils.ValidateFileUpload(fileHeader); err != nil {
+					c.JSON(400, gin.H{"error": err.Error()})
+					return
+				}
+
 				file, err := fileHeader.Open()
 				if err != nil {
 					c.JSON(400, gin.H{"error": "Invalid image"})
 					return
 				}
 
-				imageURL, err := firebase.UploadProductImage(
+				imageURL, err := h.Storage.UploadProductImage(
 					file,
 					fileHeader.Filename,
 					fileHeader.Header.Get("Content-Type"),
@@ -451,6 +538,36 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 		return
 	}
 
+	// Handle franchise associations update
+	if franchiseIDsStr := c.PostForm("franchise_ids"); franchiseIDsStr != "" {
+		// Remove existing franchise links
+		h.DB.Where("product_id = ?", product.ID).Delete(&models.FranchiseProduct{})
+
+		// Create new franchise links
+		franchiseIDs := strings.Split(franchiseIDsStr, ",")
+		for _, fidStr := range franchiseIDs {
+			fidStr = strings.TrimSpace(fidStr)
+			if fidStr == "" {
+				continue
+			}
+			parsedFID, err := uuid.Parse(fidStr)
+			if err != nil {
+				log.Printf("Invalid franchise ID in update product: %s", fidStr)
+				continue
+			}
+			fp := models.FranchiseProduct{
+				FranchiseID:   parsedFID,
+				ProductID:     product.ID,
+				StockQuantity: product.StockQuantity,
+				ReorderLevel:  product.ReorderLevel,
+				IsAvailable:   product.Status == "active",
+			}
+			if err := h.DB.Create(&fp).Error; err != nil {
+				log.Printf("Failed to create franchise product link for franchise %s: %v", fidStr, err)
+			}
+		}
+	}
+
 	h.DB.Preload("Category").Preload("Subcategory").Preload("Images").First(&product, product.ID)
 	c.JSON(http.StatusOK, product)
 }
@@ -480,7 +597,7 @@ func (h *ProductHandler) DeleteProduct(c *gin.Context) {
 			// Image not used in any order - safe to delete from Firebase
 			objectPath, err := utils.ExtractObjectPath(productImage.ImageURL)
 			if err == nil && objectPath != "" {
-				if err := firebase.DeleteFile(objectPath); err != nil {
+				if err := h.Storage.DeleteFile(objectPath); err != nil {
 					log.Printf("Failed to delete image %s from Firebase: %v", productImage.ImageURL, err)
 				} else {
 					log.Printf("Deleted image from Firebase: %s", productImage.ImageURL)
@@ -502,6 +619,22 @@ func (h *ProductHandler) DeleteProduct(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Product deleted successfully"})
 }
 
+// GetProductFranchises returns the franchise IDs associated with a product
+func (h *ProductHandler) GetProductFranchises(c *gin.Context) {
+	id := c.Param("id")
+	var franchiseProducts []models.FranchiseProduct
+	if err := h.DB.Where("product_id = ?", id).Find(&franchiseProducts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch franchise associations"})
+		return
+	}
+
+	franchiseIDs := make([]string, 0, len(franchiseProducts))
+	for _, fp := range franchiseProducts {
+		franchiseIDs = append(franchiseIDs, fp.FranchiseID.String())
+	}
+	c.JSON(http.StatusOK, gin.H{"franchise_ids": franchiseIDs})
+}
+
 func (h *ProductHandler) GetProductsPaginated(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -517,9 +650,14 @@ func (h *ProductHandler) GetProductsPaginated(c *gin.Context) {
 		query = query.Where("category_id = ?", categoryID)
 	}
 
+	// Filter by franchise
+	if franchiseID := c.Query("franchise_id"); franchiseID != "" {
+		query = query.Where("id IN (SELECT product_id FROM franchise_products WHERE franchise_id = ?)", franchiseID)
+	}
+
 	// Search by name
 	if search := c.Query("search"); search != "" {
-		query = query.Where("item_name ILIKE ?", "%"+search+"%")
+		query = query.Where("LOWER(item_name) LIKE LOWER(?)", "%"+search+"%")
 	}
 
 	query.Model(&models.Product{}).Count(&total)

@@ -20,8 +20,26 @@ var Store = &JobStore{
 	jobs: make(map[uuid.UUID]*dtos.BatchJob),
 }
 
+// CleanupOldJobs removes completed/failed jobs older than 1 hour.
+func (js *JobStore) CleanupOldJobs() {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for id, job := range js.jobs {
+		if job.CompletedAt != nil && job.CompletedAt.Before(cutoff) {
+			delete(js.jobs, id)
+		} else if job.StartedAt.Before(cutoff) && (job.Status == dtos.JobStatusCompleted || job.Status == dtos.JobStatusFailed) {
+			delete(js.jobs, id)
+		}
+	}
+}
+
 // CreateJob creates a new batch job
 func (js *JobStore) CreateJob(totalProducts int) *dtos.BatchJob {
+	// Clean up old jobs on each new creation
+	js.CleanupOldJobs()
+
 	js.mu.Lock()
 	defer js.mu.Unlock()
 

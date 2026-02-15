@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"grabbi-backend/models"
+	"grabbi-backend/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -43,7 +45,7 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": utils.SanitizeValidationError(err)})
 		return
 	}
 
@@ -66,10 +68,15 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 
 	if err == nil {
 		// Update quantity
-		cartItem.Quantity += req.Quantity
-		if cartItem.Quantity > product.StockQuantity {
-			cartItem.Quantity = product.StockQuantity
+		newQuantity := cartItem.Quantity + req.Quantity
+		if newQuantity > product.StockQuantity {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Cannot add %d more items. Only %d available (you already have %d in cart).",
+					req.Quantity, product.StockQuantity-cartItem.Quantity, cartItem.Quantity),
+			})
+			return
 		}
+		cartItem.Quantity = newQuantity
 		h.DB.Save(&cartItem)
 	} else {
 		// Create new cart item
@@ -99,7 +106,7 @@ func (h *CartHandler) UpdateCartItem(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": utils.SanitizeValidationError(err)})
 		return
 	}
 

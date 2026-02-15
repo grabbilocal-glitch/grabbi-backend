@@ -4,7 +4,8 @@ import "github.com/google/uuid"
 
 // ProductImportRequest represents the request structure for batch product import
 type ProductImportRequest struct {
-	Products []ProductImportItem `json:"products" binding:"required,min=1,max=5000"`
+	Products      []ProductImportItem `json:"products" binding:"required,min=1,max=5000"`
+	DeleteMissing bool                `json:"delete_missing"` // If true, delete products not in import (default false)
 }
 
 // ProductImportItem represents a single product item in the import
@@ -49,6 +50,7 @@ type ProductImportItem struct {
 	Notes             string   `json:"notes"`
 	ImageURLs         []string `json:"image_urls"`
 	ImagesProvided    bool     `json:"images_provided"`
+	FranchiseIDs      []string `json:"franchise_ids"`
 	Delete            bool     `json:"delete"`
 }
 

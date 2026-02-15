@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
+	"time"
 
 	"grabbi-backend/models"
 	"grabbi-backend/utils"
@@ -14,24 +16,37 @@ import (
 )
 
 type PromotionHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage firebase.StorageClient
 }
 
 func (h *PromotionHandler) GetPromotions(c *gin.Context) {
 	var promotions []models.Promotion
+	now := time.Now()
 	query := h.DB
 
-	// Only show active promotions for non-admin users
-	userRole, exists := c.Get("user_role")
-	if !exists || userRole != "admin" {
-		query = query.Where("is_active = ?", true)
-	}
+	// This is a public endpoint. Always filter by active status.
+	// Admin users access all promotions (including inactive) via the admin routes.
+	query = query.Where("is_active = ?", true)
+
+	// Filter by date range - only show promotions that are currently valid
+	query = query.Where("(start_date IS NULL OR start_date <= ?) AND (end_date IS NULL OR end_date >= ?)", now, now)
 
 	if err := query.Find(&promotions).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch promotions"})
 		return
 	}
 
+	c.JSON(http.StatusOK, promotions)
+}
+
+// GetAllPromotions returns all promotions (active + inactive) for admin use
+func (h *PromotionHandler) GetAllPromotions(c *gin.Context) {
+	var promotions []models.Promotion
+	if err := h.DB.Order("created_at DESC").Find(&promotions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch promotions"})
+		return
+	}
 	c.JSON(http.StatusOK, promotions)
 }
 
@@ -56,6 +71,22 @@ func (h *PromotionHandler) CreatePromotion(c *gin.Context) {
 	promotion.ProductURL = c.PostForm("product_url")
 	promotion.IsActive = c.PostForm("is_active") == "true"
 
+	// Parse start_date and end_date
+	if startDateStr := c.PostForm("start_date"); startDateStr != "" {
+		if parsedTime, err := time.Parse(time.RFC3339, startDateStr); err == nil {
+			promotion.StartDate = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			promotion.StartDate = &parsedTime
+		}
+	}
+	if endDateStr := c.PostForm("end_date"); endDateStr != "" {
+		if parsedTime, err := time.Parse(time.RFC3339, endDateStr); err == nil {
+			promotion.EndDate = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02", endDateStr); err == nil {
+			promotion.EndDate = &parsedTime
+		}
+	}
+
 	// Image upload
 	fileHeader, err := c.FormFile("image")
 	if err != nil {
@@ -63,10 +94,20 @@ func (h *PromotionHandler) CreatePromotion(c *gin.Context) {
 		return
 	}
 
-	file, _ := fileHeader.Open()
+	// Validate file upload (content type + size)
+	if err := utils.ValidateFileUpload(fileHeader); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open uploaded file"})
+		return
+	}
 	defer file.Close()
 
-	imageURL, err := firebase.UploadPromotionImage(
+	imageURL, err := h.Storage.UploadPromotionImage(
 		file,
 		fileHeader.Filename,
 		fileHeader.Header.Get("Content-Type"),
@@ -100,26 +141,53 @@ func (h *PromotionHandler) UpdatePromotion(c *gin.Context) {
 	promotion.ProductURL = c.PostForm("product_url")
 	promotion.IsActive = c.PostForm("is_active") == "true"
 
+	// Parse start_date and end_date
+	if startDateStr := c.PostForm("start_date"); startDateStr != "" {
+		if parsedTime, err := time.Parse(time.RFC3339, startDateStr); err == nil {
+			promotion.StartDate = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			promotion.StartDate = &parsedTime
+		}
+	}
+	if endDateStr := c.PostForm("end_date"); endDateStr != "" {
+		if parsedTime, err := time.Parse(time.RFC3339, endDateStr); err == nil {
+			promotion.EndDate = &parsedTime
+		} else if parsedTime, err := time.Parse("2006-01-02", endDateStr); err == nil {
+			promotion.EndDate = &parsedTime
+		}
+	}
+
 	//Image update
 	fileHeader, err := c.FormFile("image")
 	if err == nil {
+		// Validate file upload (content type + size)
+		if err := utils.ValidateFileUpload(fileHeader); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
 		if promotion.Image != "" {
-			objectPath, err := utils.ExtractObjectPath(promotion.Image)
-			if err == nil {
-				_ = firebase.DeleteFile(objectPath)
+			objectPath, pathErr := utils.ExtractObjectPath(promotion.Image)
+			if pathErr == nil {
+				_ = h.Storage.DeleteFile(objectPath)
 			}
 		}
 
-		// 2️⃣ Upload new image
-		file, _ := fileHeader.Open()
+		// Upload new image
+		file, openErr := fileHeader.Open()
+		if openErr != nil {
+			log.Printf("Failed to open uploaded file: %v", openErr)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open uploaded file"})
+			return
+		}
 		defer file.Close()
 
-		imageURL, err := firebase.UploadPromotionImage(
+		imageURL, uploadErr := h.Storage.UploadPromotionImage(
 			file,
 			fileHeader.Filename,
 			fileHeader.Header.Get("Content-Type"),
 		)
-		if err != nil {
+		if uploadErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Image upload failed"})
 			return
 		}
@@ -148,7 +216,7 @@ func (h *PromotionHandler) DeletePromotion(c *gin.Context) {
 	if promotion.Image != "" {
 		objectPath, err := utils.ExtractObjectPath(promotion.Image)
 		if err == nil {
-			_ = firebase.DeleteFile(objectPath)
+			_ = h.Storage.DeleteFile(objectPath)
 		}
 	}
 
