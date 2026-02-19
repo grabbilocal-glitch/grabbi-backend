@@ -23,6 +23,7 @@ type FranchiseProduct struct {
 	IsAvailable            bool       `gorm:"default:true" json:"is_available"`
 	CreatedAt              time.Time  `json:"created_at"`
 	UpdatedAt              time.Time  `json:"updated_at"`
+	DeletedAt              *time.Time `gorm:"default:null;index" json:"deleted_at,omitempty"` // Franchise-level soft delete
 }
 
 func (fp *FranchiseProduct) BeforeCreate(tx *gorm.DB) error {

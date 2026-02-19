@@ -78,13 +78,6 @@ func Migrate(db *gorm.DB) error {
 		return err
 	}
 
-	// Replace the unconditional unique index on barcode with a partial one
-	// that only enforces uniqueness for non-empty barcodes. Empty barcodes
-	// (products without a barcode) must be allowed without constraint violations.
-	db.Exec(`DROP INDEX IF EXISTS idx_products_barcode`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique
-		ON products (barcode) WHERE barcode != '' AND deleted_at IS NULL`)
-
 	// Create SKU sequence and function for auto-generating product SKUs
 	if err := db.Exec(`CREATE SEQUENCE IF NOT EXISTS sku_seq START 1;`).Error; err != nil {
 		return fmt.Errorf("failed to create sku_seq sequence: %w", err)
@@ -95,6 +88,25 @@ func Migrate(db *gorm.DB) error {
 		$$ LANGUAGE SQL;
 	`).Error; err != nil {
 		return fmt.Errorf("failed to create generate_next_sku function: %w", err)
+	}
+
+	// Fix barcode unique index properly
+	if err := db.Exec(`
+    DROP INDEX IF EXISTS idx_products_barcode;`).Error; err != nil {
+		return fmt.Errorf("failed to drop old barcode index: %w", err)
+	}
+
+	if err := db.Exec(`
+    ALTER TABLE products
+    ALTER COLUMN barcode DROP NOT NULL;`).Error; err != nil {
+		return fmt.Errorf("failed to alter barcode column: %w", err)
+	}
+
+	if err := db.Exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode
+    ON products(barcode)
+    WHERE barcode IS NOT NULL;`).Error; err != nil {
+		return fmt.Errorf("failed to create partial barcode index: %w", err)
 	}
 
 	return nil

@@ -27,6 +27,9 @@ func (m *mockStorage) DeleteFile(objectPath string) error { return nil }
 func (m *mockStorage) DownloadAndUploadImage(imageURL, productID string) (string, error) {
 	return "", nil
 }
+func (m *mockStorage) CopyImageToOrderStorage(sourceImageURL, orderID, productID string) (string, error) {
+	return "", nil
+}
 
 func init() {
 	gin.SetMode(gin.TestMode)
@@ -125,7 +128,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE IF NOT EXISTS "order_items" (
 			"id" TEXT PRIMARY KEY, "order_id" TEXT NOT NULL, "product_id" TEXT NOT NULL,
-			"image_url" TEXT, "quantity" INTEGER NOT NULL, "price" REAL NOT NULL,
+			"image_url" TEXT, "product_name" TEXT, "product_sku" TEXT,
+			"quantity" INTEGER NOT NULL, "price" REAL NOT NULL,
 			"created_at" DATETIME, "updated_at" DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS "password_reset_tokens" (

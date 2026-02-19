@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
+	"grabbi-backend/firebase"
 	"grabbi-backend/models"
 	"grabbi-backend/utils"
 
@@ -15,7 +17,8 @@ import (
 )
 
 type OrderHandler struct {
-	DB *gorm.DB
+	DB      *gorm.DB
+	Storage firebase.StorageClient
 }
 
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
@@ -109,7 +112,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	var orderItems []models.OrderItem
 
 	for _, item := range cartItems {
-		imageURL := primaryImageMap[item.ProductID]
+		sourceImageURL := primaryImageMap[item.ProductID]
 
 		currentPrice := item.Product.GetCurrentPrice()
 
@@ -131,11 +134,13 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		subtotal += itemTotal
 
 		orderItems = append(orderItems, models.OrderItem{
-			ID:        uuid.Nil,
-			ProductID: item.ProductID,
-			ImageURL:  imageURL,
-			Quantity:  item.Quantity,
-			Price:     currentPrice,
+			ID:          uuid.Nil,
+			ProductID:   item.ProductID,
+			ImageURL:    sourceImageURL, // Will be updated after order is created
+			ProductName: item.Product.ItemName,
+			ProductSKU:  item.Product.SKU,
+			Quantity:    item.Quantity,
+			Price:       currentPrice,
 		})
 	}
 
@@ -246,6 +251,30 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// Copy product images to order-specific storage for permanent retention
+	// This ensures order images are preserved even if products are deleted
+	if h.Storage != nil {
+		orderIDStr := order.ID.String()
+		for i := range orderItems {
+			if orderItems[i].ImageURL != "" {
+				// Copy image to order-specific storage
+				orderImageURL, err := h.Storage.CopyImageToOrderStorage(
+					orderItems[i].ImageURL,
+					orderIDStr,
+					orderItems[i].ProductID.String(),
+				)
+				if err != nil {
+					// Log the error but don't fail the order - the original URL will be used
+					log.Printf("Failed to copy image for order %s, product %s: %v", orderIDStr, orderItems[i].ProductID, err)
+				} else {
+					// Update the order item with the new permanent URL
+					orderItems[i].ImageURL = orderImageURL
+					h.DB.Model(&orderItems[i]).Update("image_url", orderImageURL)
+				}
+			}
+		}
+	}
+
 	// Load order with relations
 	h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User").First(&order, order.ID)
 
@@ -260,7 +289,8 @@ func (h *OrderHandler) GetOrders(c *gin.Context) {
 	userRole, _ := c.Get("user_role")
 
 	var orders []models.Order
-	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User")
+	// Use Unscoped() for Product preloading to include soft-deleted products for historical order data
+	query := h.DB.Preload("Items").Preload("Items.Product", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User").Preload("Franchise")
 
 	roleStr, _ := userRole.(string)
 
@@ -296,7 +326,8 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	userRole, _ := c.Get("user_role")
 
 	var order models.Order
-	query := h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User")
+	// Use Unscoped() for Product preloading to include soft-deleted products for historical order data
+	query := h.DB.Preload("Items").Preload("Items.Product", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).Preload("Items.Product.Category").Preload("Items.Product.Images").Preload("User")
 
 	roleStr, _ := userRole.(string)
 
@@ -381,7 +412,8 @@ func (h *OrderHandler) UpdateOrderStatus(c *gin.Context) {
 		}
 	}
 
-	h.DB.Preload("Items").Preload("Items.Product").Preload("Items.Product.Images").Preload("User").First(&order, order.ID)
+	// Use Unscoped() for Product preloading to include soft-deleted products for historical order data
+	h.DB.Preload("Items").Preload("Items.Product", func(db *gorm.DB) *gorm.DB { return db.Unscoped() }).Preload("Items.Product.Images").Preload("User").First(&order, order.ID)
 
 	// Send status update email (non-blocking)
 	if order.User.Email != "" {
@@ -402,7 +434,11 @@ func (h *OrderHandler) GetAdminDashboard(c *gin.Context) {
 	// Product count
 	var productCount int64
 	if franchiseID != "" {
-		h.DB.Model(&models.FranchiseProduct{}).Where("franchise_id = ?", franchiseID).Count(&productCount)
+		// Count products for franchise - GORM automatically excludes soft-deleted products
+		h.DB.Model(&models.Product{}).
+			Joins("JOIN franchise_products ON franchise_products.product_id = products.id").
+			Where("franchise_products.franchise_id = ?", franchiseID).
+			Count(&productCount)
 	} else {
 		h.DB.Model(&models.Product{}).Count(&productCount)
 	}

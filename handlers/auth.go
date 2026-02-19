@@ -243,9 +243,24 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:5173"
+	// Select the appropriate frontend URL based on user role
+	var frontendURL string
+	switch user.Role {
+	case "admin":
+		frontendURL = os.Getenv("ADMIN_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:5174"
+		}
+	case "franchise_owner", "franchise_staff":
+		frontendURL = os.Getenv("FRANCHISE_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:5175"
+		}
+	default:
+		frontendURL = os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "http://localhost:5173"
+		}
 	}
 	utils.SendPasswordResetEmail(user.Email, user.Name, token, frontendURL)
 

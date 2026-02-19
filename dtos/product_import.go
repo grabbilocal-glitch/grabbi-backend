@@ -44,13 +44,14 @@ type ProductImportItem struct {
 	IsOwnBrand        bool     `json:"is_own_brand"`
 	OnlineVisible     bool     `json:"online_visible"`
 	Status            string   `json:"status"`
-	Barcode           string   `json:"barcode"`
+	Barcode           *string   `json:"barcode"`
 	BatchNumber       string   `json:"batch_number"`
 	PackSize          string   `json:"pack_size"`
 	Notes             string   `json:"notes"`
 	ImageURLs         []string `json:"image_urls"`
 	ImagesProvided    bool     `json:"images_provided"`
 	FranchiseIDs      []string `json:"franchise_ids"`
+	FranchiseNames    string   `json:"franchise_names"` // Newline-separated franchise names for Excel import
 	Delete            bool     `json:"delete"`
 }
 

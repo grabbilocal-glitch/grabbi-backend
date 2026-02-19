@@ -14,6 +14,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// strPtr is a helper function to get a pointer to a string literal
+func strPtr(s string) *string {
+	return &s
+}
+
 // waitForJob polls the job store until the batch job completes or times out.
 func waitForJob(jobID string, timeout time.Duration) {
 	id, err := uuid.Parse(jobID)
@@ -627,7 +632,7 @@ func TestProcessBatchImportDirect(t *testing.T) {
 			ReorderLevel:  10,
 			CategoryID:    cat.ID.String(),
 			Status:        "active",
-			Barcode:       "BAR-DIRECT-001",
+			Barcode:       strPtr("BAR-DIRECT-001"),
 		},
 		{
 			SKU:           "DIRECT-002",
@@ -638,7 +643,7 @@ func TestProcessBatchImportDirect(t *testing.T) {
 			ReorderLevel:  5,
 			CategoryID:    cat.ID.String(),
 			Status:        "active",
-			Barcode:       "BAR-DIRECT-002",
+			Barcode:       strPtr("BAR-DIRECT-002"),
 		},
 	}
 
@@ -678,7 +683,7 @@ func TestProcessBatchImportWithDeleteMissing(t *testing.T) {
 			ReorderLevel:  10,
 			CategoryID:    cat.ID.String(),
 			Status:        "active",
-			Barcode:       "BAR-KEEP-001",
+			Barcode:       strPtr("BAR-KEEP-001"),
 		},
 	}
 

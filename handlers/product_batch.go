@@ -284,12 +284,36 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 		}
 	}
 
-	// Create FranchiseProduct entries for products with franchise_ids
-	var franchiseProductsToCreate []models.FranchiseProduct
+	// First, preload all franchises into a cache for efficient lookup
+	var allFranchises []models.Franchise
+	if err := h.DB.Find(&allFranchises).Error; err != nil {
+		log.Printf("Error loading franchises for association: %v", err)
+	}
+
+	// Build franchise lookup map by name (name is now unique)
+	franchiseByName := make(map[string]models.Franchise)
+	for _, f := range allFranchises {
+		franchiseByName[f.Name] = f
+		log.Printf("Franchise cache: '%s' -> %s", f.Name, f.ID)
+	}
+
+	type franchiseAssoc struct {
+		productID     uuid.UUID
+		franchiseID   uuid.UUID
+		stockQuantity int
+		reorderLevel  int
+		isAvailable   bool
+	}
+	var franchiseProductsToCreate []franchiseAssoc
+	var franchiseIDsToRemove []struct {
+		productID   uuid.UUID
+		franchiseID uuid.UUID
+	}
+
 	for _, productData := range products {
-		if len(productData.FranchiseIDs) == 0 {
-			continue
-		}
+		// Log what franchise data we received
+		log.Printf("Product '%s' - FranchiseNames: '%s', FranchiseIDs: %v", productData.ItemName, productData.FranchiseNames, productData.FranchiseIDs)
+
 		// Find the product by SKU or name to get its ID
 		var product models.Product
 		if productData.SKU != "" {
@@ -298,8 +322,17 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 			h.DB.Where("item_name = ?", productData.ItemName).First(&product)
 		}
 		if product.ID == uuid.Nil {
+			log.Printf("Product '%s' not found in database, skipping franchise association", productData.ItemName)
 			continue
 		}
+
+		// Check if franchise info was provided for this product
+		hasFranchiseInfo := productData.FranchiseNames != "" || len(productData.FranchiseIDs) > 0
+
+		// Collect desired franchise IDs from both FranchiseIDs and FranchiseNames
+		desiredFranchiseIDs := make(map[uuid.UUID]bool)
+
+		// Process FranchiseIDs (UUID strings)
 		for _, fidStr := range productData.FranchiseIDs {
 			fidStr = strings.TrimSpace(fidStr)
 			if fidStr == "" {
@@ -310,25 +343,166 @@ func (h *ProductHandler) processBatchImport(job *dtos.BatchJob, products []dtos.
 				log.Printf("Invalid franchise ID in batch import: %s", fidStr)
 				continue
 			}
-			// Check if association already exists
-			var existing models.FranchiseProduct
-			if h.DB.Where("franchise_id = ? AND product_id = ?", parsedFID, product.ID).First(&existing).Error == nil {
-				continue // Already exists
+			desiredFranchiseIDs[parsedFID] = true
+			log.Printf("Product '%s' - Found FranchiseID: %s", productData.ItemName, parsedFID)
+		}
+
+		// Process FranchiseNames (newline-separated franchise names)
+		if productData.FranchiseNames != "" {
+			// Split by newlines
+			nameLines := strings.Split(productData.FranchiseNames, "\n")
+			log.Printf("Product '%s' - Parsed %d franchise name lines: %v", productData.ItemName, len(nameLines), nameLines)
+			for _, nameLine := range nameLines {
+				nameLine = strings.TrimSpace(nameLine)
+				if nameLine == "" {
+					continue
+				}
+
+				// Find franchise by name (name is unique)
+				if franchise, ok := franchiseByName[nameLine]; ok {
+					desiredFranchiseIDs[franchise.ID] = true
+					log.Printf("Product '%s' - Found franchise by name '%s': %s", productData.ItemName, nameLine, franchise.ID)
+					continue
+				}
+
+				log.Printf("Warning: Franchise '%s' not found for product '%s'", nameLine, productData.ItemName)
 			}
-			franchiseProductsToCreate = append(franchiseProductsToCreate, models.FranchiseProduct{
-				FranchiseID:   parsedFID,
-				ProductID:     product.ID,
-				StockQuantity: productData.StockQuantity,
-				ReorderLevel:  productData.ReorderLevel,
-				IsAvailable:   productData.Status == "active",
-			})
+		}
+
+		log.Printf("Product '%s' - Desired franchise IDs: %v, hasFranchiseInfo: %v", productData.ItemName, desiredFranchiseIDs, hasFranchiseInfo)
+
+		// Get existing franchise associations for this product
+		var existingAssocs []models.FranchiseProduct
+		h.DB.Where("product_id = ? AND deleted_at IS NULL", product.ID).Find(&existingAssocs)
+
+		existingFranchiseIDs := make(map[uuid.UUID]bool)
+		for _, ea := range existingAssocs {
+			existingFranchiseIDs[ea.FranchiseID] = true
+			log.Printf("Product '%s' - Existing franchise association: %s", productData.ItemName, ea.FranchiseID)
+		}
+
+		// If franchise info was provided, process additions and removals
+		if hasFranchiseInfo {
+			// Determine which associations to add
+			for fid := range desiredFranchiseIDs {
+				if !existingFranchiseIDs[fid] {
+					// New association - add it
+					franchiseProductsToCreate = append(franchiseProductsToCreate, franchiseAssoc{
+						productID:     product.ID,
+						franchiseID:   fid,
+						stockQuantity: productData.StockQuantity,
+						reorderLevel:  productData.ReorderLevel,
+						isAvailable:   productData.Status == "active",
+					})
+					log.Printf("Adding franchise association: Product '%s' -> Franchise %s", productData.ItemName, fid)
+				} else {
+					log.Printf("Product '%s' - Franchise %s already associated, keeping", productData.ItemName, fid)
+				}
+			}
+
+			// Determine which associations to remove
+			for fid := range existingFranchiseIDs {
+				if !desiredFranchiseIDs[fid] {
+					// Association removed in import - mark for deletion
+					franchiseIDsToRemove = append(franchiseIDsToRemove, struct {
+						productID   uuid.UUID
+						franchiseID uuid.UUID
+					}{
+						productID:   product.ID,
+						franchiseID: fid,
+					})
+					log.Printf("Removing franchise association: Product '%s' -> Franchise %s", productData.ItemName, fid)
+				}
+			}
 		}
 	}
-	if len(franchiseProductsToCreate) > 0 {
-		if err := h.DB.CreateInBatches(franchiseProductsToCreate, 100).Error; err != nil {
-			log.Printf("Error creating franchise product associations: %v", err)
+
+	// Remove franchise associations that are no longer in the import
+	for _, remove := range franchiseIDsToRemove {
+		// Soft delete the FranchiseProduct association
+		now := time.Now()
+		if err := h.DB.Model(&models.FranchiseProduct{}).
+			Where("product_id = ? AND franchise_id = ? AND deleted_at IS NULL", remove.productID, remove.franchiseID).
+			Update("deleted_at", now).Error; err != nil {
+			log.Printf("Error removing franchise association: %v", err)
 		} else {
-			log.Printf("Created %d franchise product associations", len(franchiseProductsToCreate))
+			// Count as update for progress tracking
+			utils.Store.AddUpdated(job.ID)
+		}
+	}
+
+	// Create new franchise associations (or restore soft-deleted ones)
+	if len(franchiseProductsToCreate) > 0 {
+		var fpRecords []models.FranchiseProduct
+		// Map to track which franchiseAssoc data to use for each restoration
+		fpRecordsToRestore := make(map[uuid.UUID]franchiseAssoc) // key: FranchiseProduct.ID
+
+		for _, fa := range franchiseProductsToCreate {
+			// Check if there's a soft-deleted record for this franchise+product combination
+			var softDeletedFP models.FranchiseProduct
+			err := h.DB.Unscoped().
+				Where("franchise_id = ? AND product_id = ? AND deleted_at IS NOT NULL", fa.franchiseID, fa.productID).
+				First(&softDeletedFP).Error
+
+			if err == nil {
+				// Found a soft-deleted record - store it for restoration with new data
+				fpRecordsToRestore[softDeletedFP.ID] = franchiseAssoc{
+					productID:     fa.productID,
+					franchiseID:   fa.franchiseID,
+					stockQuantity: fa.stockQuantity,
+					reorderLevel:  fa.reorderLevel,
+					isAvailable:   fa.isAvailable,
+				}
+				log.Printf("Will restore soft-deleted franchise association: Product %s -> Franchise %s", fa.productID, fa.franchiseID)
+			} else {
+				// No soft-deleted record exists - create new
+				fpRecords = append(fpRecords, models.FranchiseProduct{
+					FranchiseID:   fa.franchiseID,
+					ProductID:     fa.productID,
+					StockQuantity: fa.stockQuantity,
+					ReorderLevel:  fa.reorderLevel,
+					IsAvailable:   fa.isAvailable,
+				})
+			}
+		}
+
+		// Restore soft-deleted records
+		if len(fpRecordsToRestore) > 0 {
+			now := time.Now()
+			for fpID, fa := range fpRecordsToRestore {
+				if err := h.DB.Model(&models.FranchiseProduct{}).
+					Where("id = ?", fpID).
+					Updates(map[string]interface{}{
+						"deleted_at":     nil,
+						"stock_quantity": fa.stockQuantity,
+						"reorder_level":  fa.reorderLevel,
+						"is_available":   fa.isAvailable,
+						"updated_at":     now,
+					}).Error; err != nil {
+					log.Printf("Error restoring franchise product association %s: %v", fpID, err)
+				} else {
+					log.Printf("Restored soft-deleted franchise product association: Product %s -> Franchise %s", fa.productID, fa.franchiseID)
+					// Count as update for progress tracking
+					utils.Store.AddUpdated(job.ID)
+				}
+			}
+		}
+
+		// Create new records (for associations that never existed before)
+		if len(fpRecords) > 0 {
+			if err := h.DB.CreateInBatches(fpRecords, 100).Error; err != nil {
+				log.Printf("Error creating franchise product associations: %v", err)
+			} else {
+				log.Printf("Created %d new franchise product associations", len(fpRecords))
+				// Count each new franchise association as an update for progress tracking
+				for range fpRecords {
+					utils.Store.AddUpdated(job.ID)
+				}
+			}
+		}
+
+		if len(fpRecordsToRestore) > 0 || len(fpRecords) > 0 {
+			log.Printf("Total franchise associations processed: %d restored, %d created", len(fpRecordsToRestore), len(fpRecords))
 		}
 	}
 
@@ -466,37 +640,37 @@ func (h *ProductHandler) prepareProductForBatch(
 
 	// Store original values for comparison if updating
 	var originalValues struct {
-		Name           string
-		Price          float64
-		CategoryID     uuid.UUID
-		Stock          int
-		Brand          string
-		PackSize       string
-		Description    string
-		IsVegan        bool
-		IsGlutenFree   bool
-		IsVegetarian   bool
+		Name            string
+		Price           float64
+		CategoryID      uuid.UUID
+		Stock           int
+		Brand           string
+		PackSize        string
+		Description     string
+		IsVegan         bool
+		IsGlutenFree    bool
+		IsVegetarian    bool
 		IsAgeRestricted bool
-		MinimumAge     *int
-		StorageType    string
-		CostPrice      float64
-		GrossMargin    float64
-		StaffDiscount  float64
-		TaxRate        float64
-		ReorderLevel   int
-		ShelfLocation  string
-		WeightVolume   float64
-		UnitOfMeasure  string
-		Supplier       string
+		MinimumAge      *int
+		StorageType     string
+		CostPrice       float64
+		GrossMargin     float64
+		StaffDiscount   float64
+		TaxRate         float64
+		ReorderLevel    int
+		ShelfLocation   string
+		WeightVolume    float64
+		UnitOfMeasure   string
+		Supplier        string
 		CountryOfOrigin string
-		AllergenInfo   string
-		IsOwnBrand     bool
-		OnlineVisible  bool
-		Status         string
-		Notes          string
-		Barcode        string
-		BatchNumber    string
-		SubcategoryID  *uuid.UUID
+		AllergenInfo    string
+		IsOwnBrand      bool
+		OnlineVisible   bool
+		Status          string
+		Notes           string
+		Barcode         *string
+		BatchNumber     string
+		SubcategoryID   *uuid.UUID
 	}
 
 	if isUpdate {
@@ -563,15 +737,18 @@ func (h *ProductHandler) prepareProductForBatch(
 	product.IsOwnBrand = productData.IsOwnBrand
 	product.OnlineVisible = productData.OnlineVisible
 	product.Status = productData.Status
-	product.Barcode = productData.Barcode
+	if productData.Barcode != nil && *productData.Barcode == "" {
+		product.Barcode = nil
+	} else {
+		product.Barcode = productData.Barcode
+	}
 	product.BatchNumber = productData.BatchNumber
 	product.PackSize = productData.PackSize
 	product.Notes = productData.Notes
 
-		// Check if fields changed by comparing old vs new
+	// Check if fields changed by comparing old vs new
 	if isUpdate {
-		fieldsChanged = (
-			product.ItemName != originalValues.Name ||
+		fieldsChanged = (product.ItemName != originalValues.Name ||
 			product.RetailPrice != originalValues.Price ||
 			product.CategoryID != originalValues.CategoryID ||
 			product.StockQuantity != originalValues.Stock ||
@@ -763,7 +940,7 @@ func (h *ProductHandler) prepareProductForBatch(
 	} else if isUpdate && productData.ImagesProvided {
 		// Images provided but empty - this means remove all existing images
 		log.Printf("Product %s - Images provided but empty, removing all existing images", product.ItemName)
-		
+
 		var existingImages []models.ProductImage
 		if err := h.DB.Where("product_id = ?", product.ID).Find(&existingImages).Error; err == nil {
 			if len(existingImages) > 0 {
@@ -816,9 +993,8 @@ func (h *ProductHandler) prepareProductForBatch(
 	return product, images, fieldsChanged, imagesChanged, nil
 }
 
-
-// deleteProductsNotInImport deletes products that are not in the imported data
-// This function safely handles deletion with order reference checks and manages progress
+// deleteProductsNotInImport soft-deletes products that are not in the imported data
+// Products are soft-deleted regardless of order references - orders can still retrieve soft-deleted products
 func (h *ProductHandler) deleteProductsNotInImport(job *dtos.BatchJob, importedProductIDs map[uuid.UUID]bool) {
 	// Fetch all active products
 	var allProducts []models.Product
@@ -828,18 +1004,15 @@ func (h *ProductHandler) deleteProductsNotInImport(job *dtos.BatchJob, importedP
 	}
 
 	// Filter products not in import
-	var productsToCheck []models.Product
-	var productIDsToCheck []uuid.UUID
-
+	var productsToDelete []models.Product
 	for _, product := range allProducts {
 		if !importedProductIDs[product.ID] {
-			productsToCheck = append(productsToCheck, product)
-			productIDsToCheck = append(productIDsToCheck, product.ID)
+			productsToDelete = append(productsToDelete, product)
 		}
 	}
 
-	if len(productIDsToCheck) == 0 {
-		log.Printf("No products need to be checked for deletion")
+	if len(productsToDelete) == 0 {
+		log.Printf("No products need to be deleted")
 		utils.Store.UpdateJob(job.ID, func(j *dtos.BatchJob) {
 			j.Progress = 90
 		})
@@ -850,46 +1023,17 @@ func (h *ProductHandler) deleteProductsNotInImport(job *dtos.BatchJob, importedP
 		j.Progress = 90
 	})
 
-	var orderCounts []dtos.ProductOrderCount
-	if err := h.DB.Model(&models.OrderItem{}).
-		Select("product_id as product_id, COUNT(*) as count").
-		Where("product_id IN ?", productIDsToCheck).
-		Group("product_id").
-		Scan(&orderCounts).Error; err != nil {
-		log.Printf("Error fetching order counts: %v", err)
-		return
-	}
-
-	// Create a map for quick lookup
-	orderCountMap := make(map[uuid.UUID]int64)
-	for _, oc := range orderCounts {
-		orderCountMap[oc.ProductID] = oc.Count
-	}
-
-	// Identify products safe to delete
-	var safeToDelete []models.Product
-	for _, product := range productsToCheck {
-		if orderCountMap[product.ID] > 0 {
-			log.Printf("Skipping deletion of product '%s' (ID: %s) - referenced in %d order(s)",
-				product.ItemName, product.ID, orderCountMap[product.ID])
-			continue
-		}
-		safeToDelete = append(safeToDelete, product)
-	}
-
-	deletedCount := 0
-	skippedCount := len(productsToCheck) - len(safeToDelete)
-
 	// Calculate progress increment per deleted product
 	progressIncrement := 0
-	if len(safeToDelete) > 0 {
-		progressIncrement = 10 / len(safeToDelete)
+	if len(productsToDelete) > 0 {
+		progressIncrement = 10 / len(productsToDelete)
 	}
 
-	h.deleteProductsBatch(safeToDelete)
+	h.deleteProductsBatch(productsToDelete)
 
-	for _, product := range safeToDelete {
-		log.Printf("Deleted product: %s (ID: %s)", product.ItemName, product.ID)
+	deletedCount := 0
+	for _, product := range productsToDelete {
+		log.Printf("Soft-deleted product: %s (ID: %s)", product.ItemName, product.ID)
 		deletedCount++
 		utils.Store.AddDeleted(job.ID)
 
@@ -904,11 +1048,16 @@ func (h *ProductHandler) deleteProductsNotInImport(job *dtos.BatchJob, importedP
 		}
 	}
 
-	log.Printf("Batch import cleanup: Deleted %d products, skipped %d products (referenced in orders)",
-		deletedCount, skippedCount)
+	log.Printf("Batch import cleanup: Soft-deleted %d products (preserved images and franchise associations)", deletedCount)
+
+	// Verify the deleted count in job
+	if job, exists := utils.Store.GetJob(job.ID); exists {
+		log.Printf("DEBUG: Job %s - Deleted count after cleanup: %d", job.ID, job.Deleted)
+	}
 }
 
-// deleteProductsBatch deletes multiple products in optimized batch operations
+// deleteProductsBatch soft-deletes multiple products WITHOUT deleting images or franchise associations
+// This allows franchise users to restore products in the franchise portal
 func (h *ProductHandler) deleteProductsBatch(products []models.Product) {
 	if len(products) == 0 {
 		return
@@ -920,80 +1069,15 @@ func (h *ProductHandler) deleteProductsBatch(products []models.Product) {
 		productIDs[i] = p.ID
 	}
 
-	// Batch 1: Fetch all images for these products at once
-	var images []models.ProductImage
-	if err := h.DB.Where("product_id IN ?", productIDs).Find(&images).Error; err != nil {
-		log.Printf("Error fetching images for batch deletion: %v", err)
+	// ONLY soft-delete the products - preserve images and franchise associations
+	// This allows franchise portal to restore products with their images intact
+	now := time.Now()
+	if err := h.DB.Model(&models.Product{}).
+		Where("id IN ?", productIDs).
+		Update("deleted_at", now).Error; err != nil {
+		log.Printf("Error batch soft-deleting products: %v", err)
 		return
 	}
 
-	// Extract image URLs
-	imageURLs := make([]string, 0, len(images))
-	for _, img := range images {
-		imageURLs = append(imageURLs, img.ImageURL)
-	}
-
-	// Batch 2: Check all image URLs for order references at once
-	var imageOrderCounts []dtos.ImageOrderCount
-	if err := h.DB.Model(&models.OrderItem{}).
-		Select("image_url as image_url, COUNT(*) as count").
-		Where("image_url IN ?", imageURLs).
-		Group("image_url").
-		Scan(&imageOrderCounts).Error; err != nil {
-		log.Printf("Error fetching image order counts: %v", err)
-	}
-
-	// Create map of images that are referenced in orders
-	referencedImages := make(map[string]bool)
-	for _, ioc := range imageOrderCounts {
-		referencedImages[ioc.ImageURL] = true
-	}
-
-	// Batch 3: Delete images from Firebase that are not referenced (OPTIMIZED: Concurrent)
-	const maxConcurrentDeletes = 5
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, maxConcurrentDeletes)
-
-	// Filter images to delete (not referenced in orders)
-	imagesToDelete := make([]models.ProductImage, 0)
-	for _, img := range images {
-		if !referencedImages[img.ImageURL] {
-			imagesToDelete = append(imagesToDelete, img)
-		}
-	}
-
-	if len(imagesToDelete) > 0 {
-		log.Printf("Concurrently deleting %d images from Firebase", len(imagesToDelete))
-
-		for _, img := range imagesToDelete {
-			wg.Add(1)
-			semaphore <- struct{}{} // Acquire
-
-			go func(image models.ProductImage) {
-				defer wg.Done()
-				defer func() { <-semaphore }() // Release
-
-				objectPath, _ := utils.ExtractObjectPath(image.ImageURL)
-				if objectPath != "" {
-					if err := h.Storage.DeleteFile(objectPath); err != nil {
-						// Only log if not a 404 error
-						if !strings.Contains(err.Error(), "object doesn't exist") {
-							log.Printf("Failed to delete image %s from Firebase: %v", image.ImageURL, err)
-						}
-					} else {
-						log.Printf("Successfully deleted image from Firebase: %s", image.ImageURL)
-					}
-				}
-			}(img)
-		}
-
-		wg.Wait()
-		log.Printf("Completed concurrent deletion of %d images", len(imagesToDelete))
-	}
-
-	// Batch 4: Soft delete all products at once
-	if err := h.DB.Where("id IN ?", productIDs).Delete(&models.Product{}).Error; err != nil {
-		log.Printf("Error batch deleting products: %v", err)
-		return
-	}
+	log.Printf("Soft-deleted %d products - images and franchise associations preserved for restoration", len(productIDs))
 }

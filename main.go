@@ -57,6 +57,13 @@ func main() {
 	// Setup Gin router
 	r := gin.Default()
 
+	// Debug middleware - log ALL incoming requests
+	r.Use(func(c *gin.Context) {
+		log.Printf("=== INCOMING REQUEST: %s %s | Content-Type: %s | Origin: %s", c.Request.Method, c.Request.URL.Path, c.GetHeader("Content-Type"), c.GetHeader("Origin"))
+		c.Next()
+		log.Printf("=== RESPONSE STATUS: %d", c.Writer.Status())
+	})
+
 	// Limit multipart form memory to 10MB
 	r.MaxMultipartMemory = 10 << 20
 

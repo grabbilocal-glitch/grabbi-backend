@@ -181,7 +181,7 @@ func TestGetProductsExcludesInactive(t *testing.T) {
 		StockQuantity: 50,
 		Status:        "inactive",
 		OnlineVisible: true,
-		Barcode:       "BAR-INACTIVE",
+		Barcode:       strPtr("BAR-INACTIVE"),
 	}
 	db.Create(&inactive)
 
@@ -515,7 +515,7 @@ func TestGetProductsShowAll(t *testing.T) {
 	hidden := models.Product{
 		ID: uuid.New(), SKU: "SKU-HID", ItemName: "Hidden",
 		RetailPrice: 2.00, CostPrice: 1.00, CategoryID: cat.ID,
-		Status: "active", OnlineVisible: false, Barcode: "BAR-HID",
+		Status: "active", OnlineVisible: false, Barcode: strPtr("BAR-HID"),
 	}
 	db.Create(&hidden)
 	// Explicitly set online_visible=false since GORM skips zero-value bools during Create

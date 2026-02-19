@@ -279,6 +279,97 @@ func UploadPromotionImage(
 	), nil
 }
 
+// CopyImageToOrderStorage downloads an image from URL and re-uploads it to order-specific storage
+// This ensures order images are preserved even if the original product images are deleted
+func CopyImageToOrderStorage(sourceImageURL, orderID, productID string) (string, error) {
+	if App == nil {
+		return "", fmt.Errorf("firebase app not initialized")
+	}
+
+	// SSRF prevention: validate the URL before fetching
+	if err := validateExternalURL(sourceImageURL); err != nil {
+		return "", fmt.Errorf("URL validation failed for %s: %v", sourceImageURL, err)
+	}
+
+	ctx := context.Background()
+	bucketName := os.Getenv("FIREBASE_STORAGE_BUCKET")
+	if bucketName == "" {
+		return "", fmt.Errorf("FIREBASE_STORAGE_BUCKET not set")
+	}
+
+	client, err := App.Storage(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get storage client: %v", err)
+	}
+
+	bucket, err := client.Bucket(bucketName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get bucket: %v", err)
+	}
+
+	// Generate object path for order-specific storage
+	// Format: orders/{order_id}/{product_id}_{timestamp}.jpg
+	objectPath := fmt.Sprintf(
+		"orders/%s/%s_%d.jpg",
+		sanitizeFilename(orderID),
+		sanitizeFilename(productID),
+		time.Now().Unix(),
+	)
+
+	// Create HTTP client to download image
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := httpClient.Get(sourceImageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image from %s: %v", sourceImageURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image: HTTP %d", resp.StatusCode)
+	}
+
+	// Check content type - must be an image
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg" // Default to jpeg if not specified
+	}
+
+	// Validate that we actually got an image, not HTML or other content
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("URL %s returned non-image content-type: %s (expected image/*)", sourceImageURL, contentType)
+	}
+
+	// Upload to Firebase
+	obj := bucket.Object(objectPath)
+	wc := obj.NewWriter(ctx)
+	wc.ContentType = contentType
+
+	if _, err := io.Copy(wc, resp.Body); err != nil {
+		wc.Close()
+		return "", fmt.Errorf("failed to upload image to Firebase: %v", err)
+	}
+
+	if err := wc.Close(); err != nil {
+		return "", fmt.Errorf("failed to finalize upload: %v", err)
+	}
+
+	// Make object publicly readable so the URL works without authentication
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+		log.Printf("Warning: failed to set public ACL on %s: %v", objectPath, err)
+	}
+
+	log.Printf("Copied image to order storage: %s", objectPath)
+
+	return fmt.Sprintf(
+		"https://storage.googleapis.com/%s/%s",
+		bucketName,
+		objectPath,
+	), nil
+}
+
 // DownloadAndUploadImage downloads an image from URL and uploads to Firebase Storage
 // Returns the Firebase storage URL
 func DownloadAndUploadImage(imageURL string, productID string) (string, error) {

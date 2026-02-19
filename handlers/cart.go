@@ -62,12 +62,12 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 		return
 	}
 
-	// Check if item already in cart
+	// Check if item already in cart (active items only)
 	var cartItem models.CartItem
 	err := h.DB.Where("user_id = ? AND product_id = ?", userID, req.ProductID).First(&cartItem).Error
 
 	if err == nil {
-		// Update quantity
+		// Update quantity for existing active cart item
 		newQuantity := cartItem.Quantity + req.Quantity
 		if newQuantity > product.StockQuantity {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -79,6 +79,8 @@ func (h *CartHandler) AddToCart(c *gin.Context) {
 		cartItem.Quantity = newQuantity
 		h.DB.Save(&cartItem)
 	} else {
+		h.DB.Unscoped().Where("user_id = ? AND product_id = ?", userID, req.ProductID).Delete(&models.CartItem{})
+
 		// Create new cart item
 		cartItem = models.CartItem{
 			ID:        uuid.New(),

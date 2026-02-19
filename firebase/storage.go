@@ -8,6 +8,7 @@ type StorageClient interface {
 	UploadPromotionImage(file multipart.File, filename, contentType string) (string, error)
 	DeleteFile(objectPath string) error
 	DownloadAndUploadImage(imageURL, productID string) (string, error)
+	CopyImageToOrderStorage(sourceImageURL, orderID, productID string) (string, error)
 }
 
 // FirebaseStorageClient is the real implementation that delegates to package-level functions.
@@ -31,4 +32,8 @@ func (f *FirebaseStorageClient) DeleteFile(objectPath string) error {
 
 func (f *FirebaseStorageClient) DownloadAndUploadImage(imageURL, productID string) (string, error) {
 	return DownloadAndUploadImage(imageURL, productID)
+}
+
+func (f *FirebaseStorageClient) CopyImageToOrderStorage(sourceImageURL, orderID, productID string) (string, error) {
+	return CopyImageToOrderStorage(sourceImageURL, orderID, productID)
 }

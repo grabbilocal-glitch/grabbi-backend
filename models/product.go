@@ -27,8 +27,8 @@ type Product struct {
 	TaxRate       float64 `gorm:"default:0" json:"tax_rate"`       // Manual tax rate percentage
 
 	// Product Identifiers
-	BatchNumber string `gorm:"index" json:"batch_number"`        // Batch number
-	Barcode     string `gorm:"index" json:"barcode"` // Product barcode
+	BatchNumber string  `gorm:"index" json:"batch_number"`                  // Batch number
+	Barcode     *string `gorm:"uniqueIndex;index" json:"barcode,omitempty"` // Product barcode
 
 	// Inventory
 	StockQuantity int    `gorm:"default:0;index" json:"stock_quantity"` // Replaces Stock field
@@ -68,7 +68,10 @@ type Product struct {
 	// Timestamps
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+
+	// Deletion tracking
+	DeletedBy string `gorm:"default:null" json:"deleted_by,omitempty"`
 
 	// Relations
 	Images []ProductImage `gorm:"foreignKey:ProductID" json:"images,omitempty"`

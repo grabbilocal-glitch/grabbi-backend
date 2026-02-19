@@ -341,6 +341,8 @@ func createSQLiteTables(db *gorm.DB) error {
 			"order_id" TEXT NOT NULL,
 			"product_id" TEXT NOT NULL,
 			"image_url" TEXT,
+			"product_name" TEXT,
+			"product_sku" TEXT,
 			"quantity" INTEGER NOT NULL,
 			"price" REAL NOT NULL,
 			"created_at" DATETIME,
@@ -433,7 +435,7 @@ func seedProduct(db *gorm.DB, name string, categoryID uuid.UUID, price float64) 
 		StockQuantity: 100,
 		Status:        "active",
 		OnlineVisible: true,
-		Barcode:       "BAR-" + uuid.New().String()[:8],
+		Barcode:       strPtr("BAR-" + uuid.New().String()[:8]),
 	}
 	db.Create(&prod)
 	return prod
@@ -622,7 +624,7 @@ func setupProductRouter(db *gorm.DB) *gin.Engine {
 // setupOrderRouter sets up routes for order handler tests.
 func setupOrderRouter(db *gorm.DB) *gin.Engine {
 	r := gin.New()
-	orderHandler := &OrderHandler{DB: db}
+	orderHandler := &OrderHandler{DB: db, Storage: newMockStorage()}
 
 	api := r.Group("/api")
 

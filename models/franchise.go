@@ -9,7 +9,7 @@ import (
 
 type Franchise struct {
 	ID              uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	Name            string         `gorm:"not null" json:"name"`
+	Name            string         `gorm:"uniqueIndex;not null" json:"name"`
 	Slug            string         `gorm:"uniqueIndex;not null" json:"slug"`
 	OwnerID         uuid.UUID      `gorm:"type:uuid;not null" json:"owner_id"`
 	Owner           User           `gorm:"foreignKey:OwnerID" json:"owner,omitempty"`

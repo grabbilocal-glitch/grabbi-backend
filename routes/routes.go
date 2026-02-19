@@ -19,9 +19,9 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, storage firebase.StorageClient) {
 	categoryHandler := &handlers.CategoryHandler{DB: db}
 	subcategoryHandler := &handlers.SubcategoryHandler{DB: db}
 	cartHandler := &handlers.CartHandler{DB: db}
-	orderHandler := &handlers.OrderHandler{DB: db}
+	orderHandler := &handlers.OrderHandler{DB: db, Storage: storage}
 	promotionHandler := &handlers.PromotionHandler{DB: db, Storage: storage}
-	franchiseHandler := &handlers.FranchiseHandler{DB: db}
+	franchiseHandler := &handlers.FranchiseHandler{DB: db, Storage: storage}
 
 	// Rate limiters
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute)
@@ -67,6 +67,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, storage firebase.StorageClient) {
 		api.GET("/promotions/:id", promotionHandler.GetPromotion)
 
 		// Public franchise routes
+		api.GET("/franchises/nearby", franchiseHandler.GetNearbyFranchises)
 		api.GET("/franchises/nearest", franchiseHandler.GetNearestFranchise)
 		api.GET("/franchises/:id", franchiseHandler.GetFranchise)
 		api.GET("/franchises/:id/products", franchiseHandler.GetFranchiseProducts)
@@ -111,11 +112,12 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, storage firebase.StorageClient) {
 	}
 
 	// Franchise portal routes (require franchise role)
-	// Read-only routes: accessible by both franchise_owner and franchise_staff
+	// Accessible by both franchise_owner and franchise_staff
 	franchise := api.Group("/franchise")
 	franchise.Use(middleware.AuthMiddleware())
 	franchise.Use(middleware.FranchiseMiddleware())
 	{
+		// Read operations - accessible by all franchise roles
 		franchise.GET("/me", franchiseHandler.GetMyFranchise)
 		franchise.GET("/products", franchiseHandler.GetMyProducts)
 		franchise.GET("/orders", franchiseHandler.GetMyOrders)
@@ -124,29 +126,37 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, storage firebase.StorageClient) {
 		franchise.GET("/promotions", franchiseHandler.GetMyPromotions)
 		franchise.GET("/dashboard", franchiseHandler.GetDashboard)
 
-		// Write operations available to all franchise roles
+		// Write operations - accessible by all franchise roles (owner and staff)
+		// Product management
+		franchise.POST("/products", franchiseHandler.CreateProduct)
+		franchise.PUT("/products/:id", franchiseHandler.UpdateProduct)
+		franchise.DELETE("/products/:id", franchiseHandler.DeleteProduct)
+		franchise.PUT("/products/:id/restore", franchiseHandler.RestoreProduct)
 		franchise.PUT("/products/:id/stock", franchiseHandler.UpdateProductStock)
+		franchise.PUT("/products/:id/pricing", franchiseHandler.UpdateProductPricing)
+
+		// Promotion management
+		franchise.POST("/promotions", franchiseHandler.CreatePromotion)
+		franchise.PUT("/promotions/:id", franchiseHandler.UpdatePromotion)
+		franchise.DELETE("/promotions/:id", franchiseHandler.DeletePromotion)
+
+		// Order management
 		franchise.PUT("/orders/:id/status", franchiseHandler.UpdateOrderStatus)
 	}
 
-	// Franchise owner-only write routes
+	// Franchise owner-only routes (restricted operations)
 	franchiseOwner := api.Group("/franchise")
 	franchiseOwner.Use(middleware.AuthMiddleware())
 	franchiseOwner.Use(middleware.FranchiseMiddleware())
 	franchiseOwner.Use(middleware.FranchiseOwnerMiddleware())
 	{
+		// Store settings - only owner can modify
 		franchiseOwner.PUT("/me", franchiseHandler.UpdateMyFranchise)
-		franchiseOwner.POST("/products", franchiseHandler.CreateProduct)
-		franchiseOwner.PUT("/products/:id/pricing", franchiseHandler.UpdateProductPricing)
-
-		franchiseOwner.POST("/staff", franchiseHandler.InviteStaff)
-		franchiseOwner.DELETE("/staff/:id", franchiseHandler.RemoveStaff)
-
 		franchiseOwner.PUT("/hours", franchiseHandler.UpdateStoreHours)
 
-		franchiseOwner.POST("/promotions", franchiseHandler.CreatePromotion)
-		franchiseOwner.PUT("/promotions/:id", franchiseHandler.UpdatePromotion)
-		franchiseOwner.DELETE("/promotions/:id", franchiseHandler.DeletePromotion)
+		// Staff management - only owner can add/remove staff
+		franchiseOwner.POST("/staff", franchiseHandler.InviteStaff)
+		franchiseOwner.DELETE("/staff/:id", franchiseHandler.RemoveStaff)
 	}
 
 	// Admin routes (require admin role)

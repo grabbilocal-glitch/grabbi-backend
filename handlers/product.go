@@ -207,8 +207,14 @@ func (h *ProductHandler) CreateProduct(c *gin.Context) {
 	product.OnlineVisible = c.PostForm("online_visible") == "true"
 	product.Status = c.PostForm("status")
 	product.Notes = c.PostForm("notes")
-	product.Barcode = c.PostForm("barcode")
 	product.BatchNumber = c.PostForm("batch_number")
+
+	// Handle nullable barcode - only set if provided and non-empty
+	if barcode := c.PostForm("barcode"); barcode != "" {
+		product.Barcode = &barcode
+	} else {
+		product.Barcode = nil
+	}
 
 	// Category
 	categoryID, err := uuid.Parse(c.PostForm("category_id"))
@@ -416,8 +422,14 @@ func (h *ProductHandler) UpdateProduct(c *gin.Context) {
 	product.OnlineVisible = c.PostForm("online_visible") == "true"
 	product.Status = c.PostForm("status")
 	product.Notes = c.PostForm("notes")
-	product.Barcode = c.PostForm("barcode")
 	product.BatchNumber = c.PostForm("batch_number")
+
+	// Handle nullable barcode - only set if provided and non-empty
+	if barcode := c.PostForm("barcode"); barcode != "" {
+		product.Barcode = &barcode
+	} else {
+		product.Barcode = nil
+	}
 
 	// Category
 	if categoryID := c.PostForm("category_id"); categoryID != "" {
@@ -576,54 +588,38 @@ func (h *ProductHandler) DeleteProduct(c *gin.Context) {
 	id := c.Param("id")
 	var product models.Product
 
-	if err := h.DB.Preload("Images").First(&product, "id = ?", id).Error; err != nil {
+	// Use Unscoped to find products even if soft-deleted (to allow re-deletion handling)
+	if err := h.DB.Unscoped().Preload("Images").First(&product, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Product not found"})
 		return
 	}
 
-	// Check and delete product images
-	for _, productImage := range product.Images {
-		// Check if this image is referenced in any order
-		var orderImageCount int64
-		h.DB.Model(&models.OrderItem{}).
-			Where("image_url = ?", productImage.ImageURL).
-			Count(&orderImageCount)
+	// Admin soft delete: preserve images, just set deleted_at and deleted_by
+	now := time.Now()
+	product.DeletedAt = gorm.DeletedAt{Time: now, Valid: true}
+	product.DeletedBy = "admin"
 
-		if orderImageCount > 0 {
-			// Image is used in orders - keep in Firebase
-			log.Printf("Image %s is referenced in %d order(s) - preserving in Firebase storage",
-				productImage.ImageURL, orderImageCount)
-		} else {
-			// Image not used in any order - safe to delete from Firebase
-			objectPath, err := utils.ExtractObjectPath(productImage.ImageURL)
-			if err == nil && objectPath != "" {
-				if err := h.Storage.DeleteFile(objectPath); err != nil {
-					log.Printf("Failed to delete image %s from Firebase: %v", productImage.ImageURL, err)
-				} else {
-					log.Printf("Deleted image from Firebase: %s", productImage.ImageURL)
-				}
-			}
-		}
-
-		// Always delete the product_image record from database
-		if err := h.DB.Delete(&productImage).Error; err != nil {
-			log.Printf("Failed to delete product image record %s: %v", productImage.ID, err)
-		}
-	}
-
-	if err := h.DB.Delete(&models.Product{}, "id = ?", id).Error; err != nil {
+	if err := h.DB.Save(&product).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete product"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Product deleted successfully"})
+	// Note: Images are preserved in Firebase for potential restoration by franchise
+	log.Printf("Admin soft-deleted product %s - images preserved", id)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Product soft deleted successfully",
+		"deleted_at": product.DeletedAt,
+		"deleted_by": product.DeletedBy,
+	})
 }
 
 // GetProductFranchises returns the franchise IDs associated with a product
 func (h *ProductHandler) GetProductFranchises(c *gin.Context) {
 	id := c.Param("id")
 	var franchiseProducts []models.FranchiseProduct
-	if err := h.DB.Where("product_id = ?", id).Find(&franchiseProducts).Error; err != nil {
+	// Filter out soft-deleted associations (deleted_at IS NULL)
+	if err := h.DB.Where("product_id = ? AND deleted_at IS NULL", id).Find(&franchiseProducts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch franchise associations"})
 		return
 	}
